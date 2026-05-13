@@ -4,6 +4,7 @@
   ],
   "report_dir": "/Users/joseph/.codex/vuln-watch/reports",
   "state_dir": "/Users/joseph/.codex/vuln-watch/state",
+  "env_file": "/Users/joseph/guard/.env",
   "max_depth": 5,
   "discover_git_roots": true,
   "git_root_search_depth": 3,

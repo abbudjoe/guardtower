@@ -85,6 +85,20 @@ def load_config(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def utc_now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
@@ -851,6 +865,8 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if config.get("env_file"):
+        load_env_file(Path(config["env_file"]).expanduser())
     payload, exposures = build_report(config, args.no_network)
     json_path, md_path = write_reports(config, payload)
     print(f"Wrote JSON report: {json_path}")

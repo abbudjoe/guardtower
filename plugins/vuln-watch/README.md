@@ -17,7 +17,13 @@ python3 /Users/joseph/guard/plugins/vuln-watch/scripts/vuln_watch.py \
   --config /Users/joseph/guard/plugins/vuln-watch/config.json
 ```
 
-Set `X_BEARER_TOKEN` to enable X recent search. Without it, the scanner still uses OSV, CISA KEV, NVD, and RSS sources.
+Set `X_BEARER_TOKEN` to enable X recent search. You can put it in `/Users/joseph/guard/.env`, which is gitignored:
+
+```bash
+X_BEARER_TOKEN=your-token-here
+```
+
+Without it, the scanner still uses OSV, CISA KEV, NVD, and RSS sources.
 
 ## Configure
 
