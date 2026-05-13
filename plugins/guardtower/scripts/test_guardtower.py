@@ -46,5 +46,24 @@ class DependencyVersionParsingTests(unittest.TestCase):
         self.assertEqual(guardtower.clean_version("10.4.0"), "10.4.0")
 
 
+class ReportFormattingTests(unittest.TestCase):
+    def test_excerpts_do_not_cut_words_mid_token(self) -> None:
+        text = (
+            "Next.js is a React framework for building full-stack web applications. "
+            "From 12.2.0 to before 15.5.16 and 16.2.5, an external client could send "
+            "a crafted request that triggers incorrect middleware handling."
+        )
+
+        excerpt = guardtower.text_excerpt(text, limit=150)
+
+        self.assertFalse(excerpt.endswith("could se..."))
+        self.assertTrue(excerpt.endswith("..."))
+
+    def test_short_excerpts_are_not_modified(self) -> None:
+        text = "CVE summary with enough detail."
+
+        self.assertEqual(guardtower.text_excerpt(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()

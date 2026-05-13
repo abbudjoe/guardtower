@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+import textwrap
 import tomllib
 import urllib.error
 import urllib.parse
@@ -477,6 +478,13 @@ def extract_cves(text: str) -> tuple[str, ...]:
     return tuple(sorted(set(re.findall(r"CVE-\d{4}-\d{4,7}", text, flags=re.IGNORECASE)), key=str.upper))
 
 
+def text_excerpt(value: str | None, limit: int = 360) -> str:
+    normalized = " ".join(str(value or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return textwrap.shorten(normalized, width=limit, placeholder="...")
+
+
 def is_security_exploit_news(title: str, body: str) -> bool:
     text = f"{title}\n{body}".lower()
     roundup_patterns = (
@@ -618,7 +626,7 @@ def fetch_nvd_recent(days_back: int, no_network: bool) -> list[ThreatItem]:
         items.append(
             ThreatItem(
                 source="nvd-recent",
-                title=f"{cve_id}: {description[:140]}",
+                title=f"{cve_id}: {text_excerpt(description)}",
                 url=url_ref,
                 published=cve.get("published"),
                 cves=tuple([cve_id]) if cve_id else (),
@@ -713,7 +721,7 @@ def fetch_x_recent(config: dict[str, Any], no_network: bool) -> list[ThreatItem]
             items.append(
                 ThreatItem(
                     source="x-recent",
-                    title=text[:140].replace("\n", " "),
+                    title=text_excerpt(text, limit=280),
                     url=f"https://x.com/i/web/status/{tweet_id}" if tweet_id else None,
                     published=tweet.get("created_at"),
                     cves=extract_cves(text),
