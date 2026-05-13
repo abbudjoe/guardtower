@@ -1,0 +1,180 @@
+{
+  "scan_roots": [
+    "/Users/joseph"
+  ],
+  "report_dir": "/Users/joseph/.codex/vuln-watch/reports",
+  "state_dir": "/Users/joseph/.codex/vuln-watch/state",
+  "max_depth": 5,
+  "discover_git_roots": true,
+  "git_root_search_depth": 3,
+  "exclude_hidden_dirs": true,
+  "exclude_dirs": [
+    ".cache",
+    ".git",
+    ".next",
+    ".npm",
+    ".pnpm-store",
+    ".venv",
+    ".agents",
+    ".bun",
+    ".cargo",
+    ".claude",
+    ".codex",
+    ".codex-control-noskill",
+    ".codex-sidekick",
+    ".config",
+    ".docker",
+    ".local",
+    ".pixi",
+    ".Trash",
+    "Library",
+    "Applications",
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Movies",
+    "Music",
+    "Pictures",
+    "node_modules",
+    "site-packages",
+    "target",
+    "vendor"
+  ],
+  "manifest_names": [
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "poetry.lock",
+    "Pipfile.lock",
+    "go.mod",
+    "Cargo.lock",
+    "Gemfile.lock"
+  ],
+  "threat_intel": {
+    "days_back": 3,
+    "include_cisa_kev": true,
+    "include_nvd_recent": true,
+    "include_osv": true,
+    "osv_query_versionless": false,
+    "include_rss": true,
+    "rss_urls": [
+      "https://www.cisa.gov/news.xml",
+      "https://www.bleepingcomputer.com/feed/",
+      "https://thehackernews.com/feeds/posts/default",
+      "https://www.securityweek.com/feed/"
+    ],
+    "x_recent_search": {
+      "enabled": true,
+      "bearer_token_env": "X_BEARER_TOKEN",
+      "max_results_per_query": 10,
+      "queries": [
+        "\"zero day\" OR \"0day\" exploit CVE -is:retweet lang:en",
+        "\"supply chain\" npm PyPI compromised package -is:retweet lang:en",
+        "\"Next.js\" advisory OR CVE -is:retweet lang:en",
+        "\"GitHub Actions\" cache poisoning package compromise -is:retweet lang:en"
+      ]
+    }
+  },
+  "watched_surfaces": [
+    {
+      "id": "nextjs",
+      "names": [
+        "Next.js",
+        "NextJS",
+        "nextjs"
+      ],
+      "packages": [
+        {
+          "ecosystem": "npm",
+          "name": "next"
+        }
+      ]
+    },
+    {
+      "id": "react",
+      "names": [
+        "React"
+      ],
+      "packages": [
+        {
+          "ecosystem": "npm",
+          "name": "react"
+        },
+        {
+          "ecosystem": "npm",
+          "name": "react-dom"
+        }
+      ]
+    },
+    {
+      "id": "vite",
+      "names": [
+        "Vite"
+      ],
+      "packages": [
+        {
+          "ecosystem": "npm",
+          "name": "vite"
+        }
+      ]
+    },
+    {
+      "id": "palo-alto-pan-os",
+      "names": [
+        "PAN-OS",
+        "Palo Alto Networks"
+      ],
+      "packages": []
+    },
+    {
+      "id": "canvas-lms",
+      "names": [
+        "Canvas LMS",
+        "Instructure Canvas"
+      ],
+      "packages": []
+    },
+    {
+      "id": "windows",
+      "names": [
+        "Windows",
+        "BitLocker",
+        "YellowKey",
+        "GreenPlasma"
+      ],
+      "packages": []
+    },
+    {
+      "id": "macos-ios",
+      "names": [
+        "macOS",
+        "iOS"
+      ],
+      "packages": []
+    },
+    {
+      "id": "copyfail",
+      "names": [
+        "CopyFail",
+        "CopyFail 2",
+        "Dirty Frag"
+      ],
+      "packages": []
+    },
+    {
+      "id": "mini-shai-hulud",
+      "names": [
+        "Mini-Shai Hulud",
+        "Shai-Hulud",
+        "cache poisoning"
+      ],
+      "packages": []
+    }
+  ],
+  "alert": {
+    "exit_nonzero_on_direct_match": false,
+    "max_report_items": 50
+  }
+}

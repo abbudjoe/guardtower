@@ -1,0 +1,41 @@
+{
+  "name": "vuln-watch",
+  "version": "0.1.0",
+  "description": "Daily vulnerability intelligence and local project exposure scanner.",
+  "author": {
+    "name": "Joseph",
+    "email": "local@example.invalid",
+    "url": "https://example.invalid/vuln-watch"
+  },
+  "homepage": "https://example.invalid/vuln-watch",
+  "repository": "https://example.invalid/vuln-watch",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "vulnerability",
+    "supply-chain",
+    "codex-automation"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Vuln Watch",
+    "shortDescription": "Daily exploit watch with local dependency exposure checks.",
+    "longDescription": "Searches vulnerability sources, optional X recent search, and local dependency manifests to report whether active projects appear exposed to current exploited packages or products.",
+    "developerName": "Joseph",
+    "category": "Security",
+    "capabilities": [
+      "Interactive",
+      "Network",
+      "Read"
+    ],
+    "websiteURL": "https://example.invalid/vuln-watch",
+    "privacyPolicyURL": "https://example.invalid/privacy",
+    "termsOfServiceURL": "https://example.invalid/terms",
+    "defaultPrompt": [
+      "Run today's vulnerability exposure scan.",
+      "Show projects matching current exploited packages.",
+      "Update Vuln Watch config for a new repo root."
+    ],
+    "brandColor": "#D97706"
+  }
+}

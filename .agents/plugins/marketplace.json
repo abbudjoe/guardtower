@@ -1,0 +1,20 @@
+{
+  "name": "guard-local",
+  "interface": {
+    "displayName": "Guard Local"
+  },
+  "plugins": [
+    {
+      "name": "vuln-watch",
+      "source": {
+        "source": "local",
+        "path": "./plugins/vuln-watch"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security"
+    }
+  ]
+}
