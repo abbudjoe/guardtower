@@ -55,6 +55,21 @@ The Remediation Plan groups findings by package/version or unmatched intelligenc
 
 The Permission Requests section is the approval hook. Guardtower never patches by itself; it emits approval IDs such as `GT-FIX-...` for direct package findings and `GT-REVIEW-...` for watched-surface intel that needs applicability review first. Reply with the approval phrase in Codex to start one bounded task. The default prompt explicitly excludes deploys, paid cloud/job mutations, and merges unless separately approved.
 
+## Review State
+
+When a `GT-REVIEW-...` item is checked and found not applicable, record that decision instead of re-reviewing the same false positive every day:
+
+```bash
+python3 plugins/guardtower/scripts/guardtower.py \
+  --config plugins/guardtower/config.json \
+  --record-review /Users/joseph/.codex/guardtower/reports/<report>.json \
+  --request-id GT-REVIEW-... \
+  --review-status not_affected \
+  --reason "Installed version is outside the affected range."
+```
+
+Review decisions are written to `/Users/joseph/.codex/guardtower/reviews.json` by default. Suppressing statuses are `not_affected`, `false_positive`, and `risk_accepted`; `affected` records review context without removing the finding from active remediation. Reports keep reviewed findings under `reviewed_exposures` and exclude them from the Action View, Remediation Plan, and future Permission Requests.
+
 ## Deployment Discovery
 
 Guardtower treats deployment status as a control-plane fact:

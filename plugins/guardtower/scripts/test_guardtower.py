@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import unittest
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -186,6 +188,107 @@ class PermissionRequestTests(unittest.TestCase):
         )
 
         self.assertEqual(requests, [])
+
+
+class ReviewStateTests(unittest.TestCase):
+    def sample_exposure(self) -> dict:
+        return {
+            "kind": "watched-surface-package",
+            "severity": "medium",
+            "source": "nvd-recent",
+            "project": "web",
+            "dependency": {
+                "ecosystem": "npm",
+                "name": "next",
+                "version": "15.5.18",
+                "project": "web",
+                "manifest": "/workspace/web/package.json",
+                "source": "dependencies",
+            },
+            "title": "Next.js affected before 15.5.16",
+            "advisory_id": "CVE-2026-44572",
+            "url": "https://example.test/advisory",
+            "evidence": "nvd-recent mentions watched surface nextjs and project uses npm:next",
+        }
+
+    def test_review_state_suppresses_reviewed_exposures_from_actionable_surfaces(self) -> None:
+        exposure = self.sample_exposure()
+        fingerprint = guardtower.exposure_fingerprint_dict(exposure)
+        with tempfile.TemporaryDirectory() as directory:
+            review_file = Path(directory) / "reviews.json"
+            review_file.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "reviews": [
+                            {
+                                "fingerprint": fingerprint,
+                                "status": "not_affected",
+                                "reason": "Installed version is outside the affected range.",
+                                "reviewed_at": "2026-05-13T00:00:00+00:00",
+                                "reviewed_by": "codex",
+                                "request_id": "GT-REVIEW-example",
+                            }
+                        ],
+                    }
+                )
+            )
+            config = {"review_state_file": str(review_file)}
+            payload = {"summary": {"exposures": 1}, "exposures": [exposure], "deployment_inventory": []}
+
+            guardtower.attach_exposure_fingerprints(payload)
+            guardtower.apply_review_state(config, payload)
+
+            self.assertEqual(payload["summary"]["raw_exposures"], 1)
+            self.assertEqual(payload["summary"]["reviewed_exposures"], 1)
+            self.assertEqual(payload["summary"]["exposures"], 0)
+            self.assertEqual(payload["exposures"], [])
+            self.assertEqual(payload["reviewed_exposures"][0]["review"]["status"], "not_affected")
+            self.assertEqual(guardtower.build_action_view(config, payload), [])
+            payload["remediation_clusters"] = guardtower.build_remediation_clusters(config, payload)
+            self.assertEqual(payload["remediation_clusters"], [])
+            self.assertEqual(guardtower.build_permission_requests(config, payload), [])
+
+    def test_record_review_decision_can_resolve_fingerprints_from_permission_request(self) -> None:
+        exposure = self.sample_exposure()
+        fingerprint = guardtower.exposure_fingerprint_dict(exposure)
+        exposure["fingerprint"] = fingerprint
+        with tempfile.TemporaryDirectory() as directory:
+            report_file = Path(directory) / "report.json"
+            review_file = Path(directory) / "reviews.json"
+            report_file.write_text(
+                json.dumps(
+                    {
+                        "all_exposures": [exposure],
+                        "permission_requests": [
+                            {
+                                "id": "GT-REVIEW-example",
+                                "package": "npm:next@15.5.18",
+                                "affected_directories": ["/workspace/web"],
+                                "advisories": ["CVE-2026-44572"],
+                            }
+                        ],
+                    }
+                )
+            )
+
+            path, count = guardtower.record_review_decision(
+                {"review_state_file": str(review_file)},
+                report_file,
+                request_id="GT-REVIEW-example",
+                explicit_fingerprints=None,
+                status="not_affected",
+                reason="Installed version is outside the affected range.",
+                reviewed_by="codex",
+                expires_at=None,
+            )
+
+            self.assertEqual(path, review_file)
+            self.assertEqual(count, 1)
+            reviews = json.loads(review_file.read_text())["reviews"]
+            self.assertEqual(reviews[0]["fingerprint"], fingerprint)
+            self.assertEqual(reviews[0]["request_id"], "GT-REVIEW-example")
+            self.assertEqual(reviews[0]["exposure"]["package"], "npm:next@15.5.18")
 
 
 if __name__ == "__main__":
