@@ -12,9 +12,37 @@ python3 plugins/vuln-watch/scripts/vuln_watch.py --config plugins/vuln-watch/con
 
 Set `X_BEARER_TOKEN` to enable X recent search. Without it, the scanner still uses OSV, CISA KEV, NVD, and RSS sources.
 
+Set `VERCEL_TOKEN` to enable Vercel production deployment discovery. Optional `VERCEL_TEAM_ID` or `VERCEL_TEAM_SLUG` scopes API requests to a team.
+
 ## Reports
 
 Reports are written to `/Users/joseph/.codex/vuln-watch/reports` by default. Edit `plugins/vuln-watch/config.json` to change scan roots, watched surfaces, or report paths.
+
+## Deployment Discovery
+
+Guardtower treats deployment status as a control-plane fact:
+
+- explicit `deployment_status` entries in config are authoritative
+- Vercel projects can be verified through the Vercel deployments API when `VERCEL_TOKEN` is set
+- local markers such as `vercel.json` only mean `deployable marker found`, not deployed
+
+Example Vercel mapping:
+
+```json
+"deployment_discovery": {
+  "vercel": {
+    "enabled": true,
+    "token_env": "VERCEL_TOKEN",
+    "team_slug_env": "VERCEL_TEAM_SLUG",
+    "projects": [
+      {
+        "path_prefix": "/workspace/liquidshell/apps/web",
+        "project_name": "liquidshell"
+      }
+    ]
+  }
+}
+```
 
 ### Example Action View
 

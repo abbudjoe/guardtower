@@ -132,6 +132,16 @@ def record_source_failure(source: str, message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def request_json_auth(url: str, token: str) -> Any:
+    return request_json(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "codex-vuln-watch/0.1",
+        },
+    )
+
+
 def project_name_for(path: Path) -> str:
     if path.name in {"package.json", "pyproject.toml", "go.mod", "Cargo.lock", "Gemfile.lock"}:
         return path.parent.name
@@ -848,7 +858,25 @@ def exposure_label(exposure: dict[str, Any]) -> str:
     return f"{exposure.get('severity')} {exposure.get('kind')}{project}{package}{advisory}: {exposure.get('title')}"
 
 
-def deployment_status_for(config: dict[str, Any], exposure: dict[str, Any]) -> str:
+def normalize_path_prefix(path: str) -> str:
+    return str(Path(path).expanduser().resolve())
+
+
+def inventory_status_for_path(deployment_inventory: list[dict[str, Any]], manifest: str | None) -> dict[str, Any] | None:
+    if not manifest:
+        return None
+    manifest_path = normalize_path_prefix(manifest)
+    matches = []
+    for item in deployment_inventory:
+        prefix = item.get("path_prefix")
+        if prefix and manifest_path.startswith(normalize_path_prefix(str(prefix))):
+            matches.append((len(str(prefix)), item))
+    if not matches:
+        return None
+    return sorted(matches, key=lambda value: value[0], reverse=True)[0][1]
+
+
+def deployment_status_for(config: dict[str, Any], exposure: dict[str, Any], deployment_inventory: list[dict[str, Any]] | None = None) -> str:
     dep = exposure.get("dependency") or {}
     manifest = dep.get("manifest")
     project = exposure.get("project")
@@ -861,6 +889,9 @@ def deployment_status_for(config: dict[str, Any], exposure: dict[str, Any]) -> s
         prefix = entry.get("path_prefix")
         if manifest and prefix and str(manifest).startswith(str(prefix)):
             return status
+    discovered = inventory_status_for_path(deployment_inventory or [], manifest)
+    if discovered:
+        return str(discovered.get("status") or "unknown")
     if manifest:
         path = Path(manifest)
         for parent in [path.parent, *path.parents]:
@@ -873,10 +904,10 @@ def deployment_status_for(config: dict[str, Any], exposure: dict[str, Any]) -> s
     return "unknown"
 
 
-def exposure_class_for(config: dict[str, Any], exposure: dict[str, Any]) -> str:
+def exposure_class_for(config: dict[str, Any], exposure: dict[str, Any], deployment_inventory: list[dict[str, Any]] | None = None) -> str:
     if not exposure.get("dependency"):
         return "unmatched intel"
-    deployment_status = deployment_status_for(config, exposure)
+    deployment_status = deployment_status_for(config, exposure, deployment_inventory)
     if deployment_status in {"deployed", "production"}:
         return "deployed"
     dep = exposure["dependency"]
@@ -937,11 +968,12 @@ def vulnerability_label_for(exposure: dict[str, Any]) -> str:
 
 def build_action_view(config: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, str]]:
     rows = []
+    deployment_inventory = payload.get("deployment_inventory") or []
     urgency_order = {"critical": 0, "high": 1, "medium": 2, "watch": 3}
     class_order = {"deployed": 0, "active repo": 1, "lockfile-only": 2, "dev dependency": 3, "unmatched intel": 4}
     for exposure in payload.get("exposures") or []:
-        exposure_class = exposure_class_for(config, exposure)
-        deployment_status = deployment_status_for(config, exposure)
+        exposure_class = exposure_class_for(config, exposure, deployment_inventory)
+        deployment_status = deployment_status_for(config, exposure, deployment_inventory)
         urgency = urgency_for(exposure, exposure_class)
         rows.append(
             {
@@ -963,6 +995,142 @@ def build_action_view(config: dict[str, Any], payload: dict[str, Any]) -> list[d
             row["vulnerability"],
         ),
     )
+
+
+def vercel_scope_params(vercel_config: dict[str, Any]) -> dict[str, str]:
+    params = {}
+    team_id_env = vercel_config.get("team_id_env", "VERCEL_TEAM_ID")
+    team_slug_env = vercel_config.get("team_slug_env", "VERCEL_TEAM_SLUG")
+    team_id = os.environ.get(team_id_env)
+    team_slug = os.environ.get(team_slug_env)
+    if team_id:
+        params["teamId"] = team_id
+    elif team_slug:
+        params["slug"] = team_slug
+    return params
+
+
+def vercel_deployment_status(project_identifier: str, vercel_config: dict[str, Any], token: str) -> tuple[str, dict[str, Any]]:
+    params = {
+        "limit": "1",
+        "target": "production",
+        "state": "READY",
+        "projectId": project_identifier,
+    }
+    params.update(vercel_scope_params(vercel_config))
+    url = f"https://api.vercel.com/v6/deployments?{urllib.parse.urlencode(params)}"
+    payload = request_json_auth(url, token)
+    deployments = payload.get("deployments") or []
+    if deployments:
+        deployment = deployments[0]
+        deployment_url = deployment.get("url")
+        return "deployed", {
+            "latest_deployment_url": f"https://{deployment_url}" if deployment_url and not str(deployment_url).startswith("http") else deployment_url,
+            "deployment_uid": deployment.get("uid"),
+            "deployment_state": deployment.get("state"),
+            "deployment_target": deployment.get("target"),
+        }
+    return "linked; no READY production deployment found", {}
+
+
+def discover_local_vercel_projects(config: dict[str, Any]) -> list[dict[str, Any]]:
+    discovered: dict[str, dict[str, Any]] = {}
+    exclude_dirs = set(config.get("exclude_dirs") or [])
+    max_depth = int(config.get("max_depth", 5)) + 2
+    for root in discover_scan_roots(config):
+        root_depth = len(root.parts)
+        for current_root, dirs, files in os.walk(root):
+            current = Path(current_root)
+            depth = len(current.parts) - root_depth
+            if depth >= max_depth:
+                dirs[:] = []
+            dirs[:] = [
+                dirname
+                for dirname in dirs
+                if dirname not in exclude_dirs
+                and dirname not in {"node_modules", ".next"}
+                and not dirname.endswith(".app")
+            ]
+            if current.name == ".vercel" and "project.json" in files:
+                try:
+                    payload = json.loads((current / "project.json").read_text())
+                except Exception:  # noqa: BLE001
+                    continue
+                project_root = current.parent
+                discovered[str(project_root)] = {
+                    "provider": "vercel",
+                    "path_prefix": str(project_root),
+                    "project_id": payload.get("projectId"),
+                    "org_id": payload.get("orgId"),
+                    "status": "linked; production deployment unverified",
+                    "evidence": ".vercel/project.json",
+                }
+                dirs[:] = []
+            elif "vercel.json" in files:
+                discovered.setdefault(
+                    str(current),
+                    {
+                        "provider": "vercel",
+                        "path_prefix": str(current),
+                        "status": "deployable marker found",
+                        "evidence": "vercel.json",
+                    },
+                )
+    return list(discovered.values())
+
+
+def build_deployment_inventory(config: dict[str, Any], no_network: bool) -> tuple[list[dict[str, Any]], list[str]]:
+    inventory: list[dict[str, Any]] = []
+    failures: list[str] = []
+    discovery = config.get("deployment_discovery") or {}
+    vercel_config = discovery.get("vercel") or {}
+    if vercel_config.get("enabled", False):
+        inventory.extend(discover_local_vercel_projects(config))
+        configured_projects = vercel_config.get("projects") or []
+        by_prefix = {item.get("path_prefix"): item for item in inventory if item.get("path_prefix")}
+        for project in configured_projects:
+            prefix = project.get("path_prefix")
+            if not prefix:
+                continue
+            item = by_prefix.setdefault(
+                prefix,
+                {
+                    "provider": "vercel",
+                    "path_prefix": prefix,
+                    "status": "configured; production deployment unverified",
+                    "evidence": "deployment_discovery.vercel.projects",
+                },
+            )
+            item.update({key: value for key, value in project.items() if value})
+        inventory = list(by_prefix.values())
+
+        token = os.environ.get(vercel_config.get("token_env", "VERCEL_TOKEN"))
+        if not no_network and token:
+            for item in inventory:
+                if item.get("provider") != "vercel":
+                    continue
+                identifier = item.get("project_id") or item.get("project_name")
+                if not identifier:
+                    continue
+                try:
+                    status, metadata = vercel_deployment_status(str(identifier), vercel_config, token)
+                except Exception as exc:  # noqa: BLE001
+                    item["status"] = item.get("status") or "unknown"
+                    item["deployment_error"] = str(exc)
+                    failures.append("vercel")
+                    continue
+                item["status"] = status
+                item.update(metadata)
+                item["evidence"] = "Vercel deployments API"
+        elif not no_network and inventory:
+            failures.append("vercel")
+            for item in inventory:
+                if item.get("provider") == "vercel":
+                    message = "VERCEL_TOKEN not set; production deployment unverified"
+                    item["deployment_error"] = message
+                    evidence = item.get("evidence")
+                    item["evidence"] = f"{evidence}; {message}" if evidence else message
+    return sorted(inventory, key=lambda item: str(item.get("path_prefix") or "")), sorted(set(failures))
 
 
 def compute_delta(current: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
@@ -1079,6 +1247,31 @@ def markdown_report(payload: dict[str, Any]) -> str:
         for source in payload["source_failures"]:
             lines.append(f"- {source}")
         lines.append("")
+    if payload.get("deployment_source_failures"):
+        lines.append("## Deployment Discovery Failures")
+        for source in payload["deployment_source_failures"]:
+            lines.append(f"- {source}")
+        lines.append("")
+    if payload.get("deployment_inventory"):
+        lines.append("## Deployment Inventory")
+        lines.append("| Provider | Project/Directory | Status | Evidence | Latest Deployment |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for item in payload["deployment_inventory"][: payload["max_report_items"]]:
+            lines.append(
+                "| "
+                + " | ".join(
+                    markdown_table_cell(value)
+                    for value in (
+                        item.get("provider"),
+                        item.get("path_prefix"),
+                        item.get("status"),
+                        item.get("evidence") or item.get("deployment_error"),
+                        item.get("latest_deployment_url"),
+                    )
+                )
+                + " |"
+            )
+        lines.append("")
     if payload.get("action_view"):
         lines.append("## Action View")
         lines.append("| Urgency | Vulnerability | Project/Directory | Deployment Status | Severity | Recommended Action |")
@@ -1193,6 +1386,7 @@ def build_report(config: dict[str, Any], no_network: bool) -> tuple[dict[str, An
         build_osv_exposures(dependencies, osv_results)
         + build_threat_exposures(config, dependencies, threat_items)
     )
+    deployment_inventory, deployment_failures = build_deployment_inventory(config, no_network)
     projects = sorted({dep.project for dep in dependencies})
     payload = {
         "generated_at": iso_date(utc_now()),
@@ -1209,6 +1403,8 @@ def build_report(config: dict[str, Any], no_network: bool) -> tuple[dict[str, An
         "dependencies": dependencies,
         "threat_items": threat_items,
         "exposures": exposures,
+        "deployment_inventory": deployment_inventory,
+        "deployment_source_failures": deployment_failures,
         "source_failures": sorted(SOURCE_FAILURES),
         "parser_errors": parser_errors,
         "max_report_items": int((config.get("alert") or {}).get("max_report_items", 50)),

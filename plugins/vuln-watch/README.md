@@ -45,6 +45,15 @@ X_BEARER_TOKEN=your-token-here
 
 Without it, the scanner still uses OSV, CISA KEV, NVD, and RSS sources.
 
+Set `VERCEL_TOKEN` to enable Vercel production deployment discovery:
+
+```bash
+VERCEL_TOKEN=your-vercel-token
+VERCEL_TEAM_SLUG=your-team-slug
+```
+
+`VERCEL_TEAM_ID` can be used instead of `VERCEL_TEAM_SLUG`.
+
 ## Configure
 
 Edit `config.json` to add scan roots, deployment directories, RSS feeds, or explicit watched surfaces. By default, broad scan roots are reduced to Git repository roots before manifest scanning so caches and home-level tool stores are not treated as active projects.
@@ -52,3 +61,29 @@ Edit `config.json` to add scan roots, deployment directories, RSS feeds, or expl
 Watched surfaces are the contract between unstructured threat chatter and your actual project surfaces; package matches are exact by ecosystem and package name.
 
 OSV direct-exposure alerts require concrete package versions by default. Set `threat_intel.osv_query_versionless` to `true` only when you intentionally want broad package-history findings.
+
+## Deployment Discovery
+
+Guardtower treats deployment status as a control-plane fact:
+
+- explicit `deployment_status` entries in config are authoritative
+- Vercel projects can be verified through the Vercel deployments API when `VERCEL_TOKEN` is set
+- local markers such as `vercel.json` only mean `deployable marker found`, not deployed
+
+Example Vercel mapping:
+
+```json
+"deployment_discovery": {
+  "vercel": {
+    "enabled": true,
+    "token_env": "VERCEL_TOKEN",
+    "team_slug_env": "VERCEL_TEAM_SLUG",
+    "projects": [
+      {
+        "path_prefix": "/workspace/liquidshell/apps/web",
+        "project_name": "liquidshell"
+      }
+    ]
+  }
+}
+```

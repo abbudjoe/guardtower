@@ -12,6 +12,20 @@
       "notes": "Set to deployed/staging/local/archived after confirming runtime status."
     }
   ],
+  "deployment_discovery": {
+    "vercel": {
+      "enabled": true,
+      "token_env": "VERCEL_TOKEN",
+      "team_id_env": "VERCEL_TEAM_ID",
+      "team_slug_env": "VERCEL_TEAM_SLUG",
+      "projects": [
+        {
+          "path_prefix": "/Users/joseph/liquidshell/apps/web",
+          "project_name": "liquidshell"
+        }
+      ]
+    }
+  },
   "max_depth": 5,
   "discover_git_roots": true,
   "git_root_search_depth": 3,
