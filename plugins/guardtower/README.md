@@ -10,6 +10,13 @@ It does three things in one deterministic pass:
 
 Threat-intel matching is intentionally strict: generic AI/tech news roundups, newsletters, and meta-discussion replies are filtered out unless the item is centered on a concrete security exploit, CVE, compromised package, or actively exploited vulnerability.
 
+## Skills
+
+This plugin includes:
+
+- `guardtower`: run and maintain the daily exposure scanner.
+- `guardtower-dependency-preflight`: use before dependency installs, upgrades, lockfile refreshes, SDK changes, or package-manager changes so Codex runs Guardtower before mutating dependency surfaces.
+
 ## Run
 
 ```bash
