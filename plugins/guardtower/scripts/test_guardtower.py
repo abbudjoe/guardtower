@@ -124,5 +124,69 @@ class ExposureFingerprintTests(unittest.TestCase):
         self.assertEqual(delta["persisting"], 1)
 
 
+class PermissionRequestTests(unittest.TestCase):
+    def test_builds_fix_request_for_high_direct_package_cluster(self) -> None:
+        payload = {
+            "remediation_clusters": [
+                {
+                    "urgency": "high",
+                    "package": "PyPI:urllib3@2.2.2",
+                    "affected_directories": ["/workspace/api"],
+                    "affected_directory_count": 1,
+                    "deployment_statuses": ["container marker found"],
+                    "severity": "active repo",
+                    "advisories": ["GHSA-2xpw-w6gg-jr37"],
+                    "exposure_count": 1,
+                    "kinds": ["direct-package"],
+                    "recommended_action": "Upgrade urllib3.",
+                    "attribution_commands": ["cd /workspace/api && pipdeptree -r -p urllib3"],
+                }
+            ]
+        }
+
+        requests = guardtower.build_permission_requests({}, payload)
+
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["type"], "fix")
+        self.assertTrue(requests[0]["id"].startswith("GT-FIX-"))
+        self.assertIn("Approve", requests[0]["question"])
+        self.assertIn("Do not deploy", requests[0]["question"])
+
+    def test_builds_review_request_for_critical_watched_surface_cluster(self) -> None:
+        payload = {
+            "remediation_clusters": [
+                {
+                    "urgency": "critical",
+                    "package": "npm:next@15.5.18",
+                    "affected_directories": ["/workspace/web"],
+                    "affected_directory_count": 1,
+                    "deployment_statuses": ["deployed"],
+                    "severity": "deployed",
+                    "advisories": ["CVE-2026-44572"],
+                    "exposure_count": 1,
+                    "kinds": ["watched-surface-package"],
+                    "recommended_action": "Review applicability.",
+                    "attribution_commands": ["cd /workspace/web && npm explain next"],
+                }
+            ]
+        }
+
+        requests = guardtower.build_permission_requests({}, payload)
+
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["type"], "review")
+        self.assertTrue(requests[0]["id"].startswith("GT-REVIEW-"))
+
+    def test_permission_requests_can_be_disabled(self) -> None:
+        payload = {"remediation_clusters": [{"urgency": "high", "kinds": ["direct-package"]}]}
+
+        requests = guardtower.build_permission_requests(
+            {"remediation_permission": {"enabled": False}},
+            payload,
+        )
+
+        self.assertEqual(requests, [])
+
+
 if __name__ == "__main__":
     unittest.main()
