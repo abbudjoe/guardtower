@@ -46,6 +46,7 @@ Each report includes:
 - exposure delta: new, resolved, still present, and not observed because a source failed
 - source failures such as NVD timeout or missing X/Vercel credentials
 - deployment inventory
+- clustered remediation plan grouped by package/version
 - Action View triage table
 - raw exposure and threat-item details in JSON
 
@@ -56,6 +57,8 @@ urgency | vulnerability | project/directory | deployment status | severity | rec
 ```
 
 The `severity` column is a triage class: `deployed`, `active repo`, `lockfile-only`, `dev dependency`, or `unmatched intel`.
+
+The Remediation Plan groups findings by package/version or unmatched intelligence item, ranks the clusters by urgency and deployment status, and includes package-manager attribution commands such as `npm explain`, `cargo tree -i`, or `pipdeptree -r -p`.
 
 ## Configure
 

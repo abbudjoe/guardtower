@@ -1052,6 +1052,137 @@ def build_action_view(config: dict[str, Any], payload: dict[str, Any]) -> list[d
     )
 
 
+def urgency_rank(value: str) -> int:
+    return {"critical": 0, "high": 1, "medium": 2, "watch": 3}.get(value, 9)
+
+
+def class_rank(value: str) -> int:
+    return {"deployed": 0, "active repo": 1, "lockfile-only": 2, "dev dependency": 3, "unmatched intel": 4}.get(value, 9)
+
+
+def package_label(dep: dict[str, Any]) -> str:
+    version = dep.get("version") or "unknown"
+    return f"{dep.get('ecosystem')}:{dep.get('name')}@{version}"
+
+
+def package_attribution_command(dep: dict[str, Any], directory: str) -> str:
+    ecosystem = str(dep.get("ecosystem") or "").lower()
+    name = str(dep.get("name") or "")
+    if ecosystem == "npm":
+        return f"cd {directory} && npm explain {name}"
+    if ecosystem == "crates.io":
+        return f"cd {directory} && cargo tree -i {name}"
+    if ecosystem == "pypi":
+        return f"cd {directory} && pipdeptree -r -p {name}"
+    if ecosystem == "go":
+        return f"cd {directory} && go mod why -m {name}"
+    if ecosystem == "rubygems":
+        return f"cd {directory} && bundle why {name}"
+    return f"cd {directory} && inspect dependency {name}"
+
+
+def cluster_action_for(cluster: dict[str, Any]) -> str:
+    package = cluster.get("package") or "unmatched intel"
+    severity = cluster.get("severity")
+    urgency = cluster.get("urgency")
+    if severity == "deployed" or urgency == "critical":
+        return f"Confirm runtime exposure for {package}, patch or pin safely, redeploy, then rerun Guardtower."
+    if severity == "active repo":
+        return f"Upgrade or replace {package} in affected active repos, run tests/builds, then rerun Guardtower."
+    if severity == "lockfile-only":
+        return f"Run attribution commands for {package}; update the parent dependency or refresh the lockfile."
+    if severity == "dev dependency":
+        return f"Update dev tooling dependency {package}; prioritize CI/build paths that process untrusted input."
+    return "Map this intel item to a concrete package/deployment, or suppress it if not relevant."
+
+
+def build_remediation_clusters(config: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    deployment_inventory = payload.get("deployment_inventory") or []
+    clusters: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for exposure in payload.get("exposures") or []:
+        dep = exposure.get("dependency")
+        if dep:
+            key = ("package", dep.get("ecosystem"), dep.get("name"), dep.get("version") or "unknown")
+            directory = project_directory_for(exposure)
+            package = package_label(dep)
+        else:
+            key = ("intel", exposure.get("source"), exposure.get("advisory_id"), exposure.get("title"))
+            directory = "unmatched"
+            package = None
+
+        exposure_class = exposure_class_for(config, exposure, deployment_inventory)
+        deployment_status = deployment_status_for(config, exposure, deployment_inventory)
+        urgency = urgency_for(exposure, exposure_class)
+        cluster = clusters.setdefault(
+            key,
+            {
+                "urgency": urgency,
+                "package": package,
+                "vulnerability": vulnerability_label_for(exposure),
+                "affected_directories": set(),
+                "deployment_statuses": set(),
+                "severity_classes": set(),
+                "advisories": set(),
+                "sources": set(),
+                "exposure_count": 0,
+                "attribution_commands": set(),
+            },
+        )
+        if urgency_rank(urgency) < urgency_rank(cluster["urgency"]):
+            cluster["urgency"] = urgency
+        if class_rank(exposure_class) < class_rank(next(iter(cluster["severity_classes"]), exposure_class)):
+            cluster["severity"] = exposure_class
+        cluster["affected_directories"].add(directory)
+        cluster["deployment_statuses"].add(deployment_status)
+        cluster["severity_classes"].add(exposure_class)
+        cluster["sources"].add(str(exposure.get("source") or "unknown"))
+        if exposure.get("advisory_id"):
+            for advisory in str(exposure["advisory_id"]).split(","):
+                advisory = advisory.strip()
+                if advisory:
+                    cluster["advisories"].add(advisory)
+        elif exposure.get("title"):
+            cluster["advisories"].add(str(exposure["title"])[:120])
+        cluster["exposure_count"] += 1
+        if dep:
+            cluster["attribution_commands"].add(package_attribution_command(dep, directory))
+
+    output = []
+    for cluster in clusters.values():
+        severity_classes = sorted(cluster["severity_classes"], key=class_rank)
+        severity = cluster.get("severity") or (severity_classes[0] if severity_classes else "unmatched intel")
+        directories = sorted(cluster["affected_directories"])
+        advisories = sorted(cluster["advisories"])
+        commands = sorted(cluster["attribution_commands"])
+        row = {
+            "urgency": cluster["urgency"],
+            "package": cluster["package"] or "unmatched intel",
+            "vulnerability": cluster["vulnerability"],
+            "affected_directory_count": len(directories),
+            "affected_directories": directories,
+            "deployment_statuses": sorted(cluster["deployment_statuses"]),
+            "severity": severity,
+            "severity_classes": severity_classes,
+            "exposure_count": cluster["exposure_count"],
+            "advisory_count": len(advisories),
+            "advisories": advisories,
+            "sources": sorted(cluster["sources"]),
+            "attribution_commands": commands,
+        }
+        row["recommended_action"] = cluster_action_for(row)
+        output.append(row)
+
+    return sorted(
+        output,
+        key=lambda row: (
+            urgency_rank(row["urgency"]),
+            class_rank(row["severity"]),
+            -int(row["exposure_count"]),
+            row["package"],
+        ),
+    )
+
+
 def vercel_scope_params(vercel_config: dict[str, Any]) -> dict[str, str]:
     params = {}
     team_id_env = vercel_config.get("team_id_env", "VERCEL_TEAM_ID")
@@ -1327,6 +1458,32 @@ def markdown_report(payload: dict[str, Any]) -> str:
                 + " |"
             )
         lines.append("")
+    if payload.get("remediation_clusters"):
+        lines.append("## Remediation Plan")
+        lines.append("| Urgency | Package | Exposure Count | Affected Directories | Deployment Status | Severity | Recommended Action | Attribution Commands |")
+        lines.append("| --- | --- | ---: | ---: | --- | --- | --- | --- |")
+        for row in payload["remediation_clusters"][: payload["max_report_items"]]:
+            commands = "<br>".join(row.get("attribution_commands") or [])
+            lines.append(
+                "| "
+                + " | ".join(
+                    markdown_table_cell(value)
+                    for value in (
+                        row.get("urgency"),
+                        row.get("package"),
+                        row.get("exposure_count"),
+                        row.get("affected_directory_count"),
+                        ", ".join(row.get("deployment_statuses") or []),
+                        row.get("severity"),
+                        row.get("recommended_action"),
+                        commands,
+                    )
+                )
+                + " |"
+            )
+        if len(payload["remediation_clusters"]) > payload["max_report_items"]:
+            lines.append(f"- ... {len(payload['remediation_clusters']) - payload['max_report_items']} more remediation clusters in the JSON report.")
+        lines.append("")
     if payload.get("action_view"):
         lines.append("## Action View")
         lines.append("| Urgency | Vulnerability | Project/Directory | Deployment Status | Severity | Recommended Action |")
@@ -1413,6 +1570,7 @@ def write_reports(config: dict[str, Any], payload: dict[str, Any]) -> tuple[Path
     payload.update(normalized)
     add_delta_to_payload(payload, report_dir, current_json_path=json_path)
     payload["action_view"] = build_action_view(config, payload)
+    payload["remediation_clusters"] = build_remediation_clusters(config, payload)
     json_path.write_text(json.dumps(payload, indent=2) + "\n")
     loaded = json.loads(json_path.read_text())
     md_path.write_text(markdown_report(loaded))
