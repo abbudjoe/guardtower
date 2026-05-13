@@ -10,6 +10,14 @@ It does three things in one deterministic pass:
 
 Reports are written to `/Users/joseph/.codex/vuln-watch/reports` by default as timestamped Markdown and JSON files. Each report compares against the latest previous JSON report and includes new, resolved, and still-present exposure counts.
 
+Reports also include an Action View table with:
+
+```text
+urgency | vulnerability | project/directory | deployment status | severity | recommended action
+```
+
+The `severity` column is a triage class: `deployed`, `active repo`, `lockfile-only`, `dev dependency`, or `unmatched intel`.
+
 ## Run
 
 ```bash

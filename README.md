@@ -2,7 +2,7 @@
 
 Guardtower is a Codex plugin for scheduled vulnerability exposure checks across local projects and deployment surfaces.
 
-The current plugin, `vuln-watch`, inventories dependency manifests, checks exact package/version exposure through OSV, pulls current vulnerability intelligence from CISA KEV, NVD, RSS feeds, and optional X recent search, then writes timestamped Markdown and JSON reports with new/resolved/still-present exposure deltas.
+The current plugin, `vuln-watch`, inventories dependency manifests, checks exact package/version exposure through OSV, pulls current vulnerability intelligence from CISA KEV, NVD, RSS feeds, and optional X recent search, then writes timestamped Markdown and JSON reports with new/resolved/still-present exposure deltas and an action view for triage.
 
 ## Run Locally
 

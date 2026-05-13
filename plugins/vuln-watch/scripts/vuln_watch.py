@@ -848,6 +848,123 @@ def exposure_label(exposure: dict[str, Any]) -> str:
     return f"{exposure.get('severity')} {exposure.get('kind')}{project}{package}{advisory}: {exposure.get('title')}"
 
 
+def deployment_status_for(config: dict[str, Any], exposure: dict[str, Any]) -> str:
+    dep = exposure.get("dependency") or {}
+    manifest = dep.get("manifest")
+    project = exposure.get("project")
+    if not manifest and not project:
+        return "not applicable"
+    for entry in config.get("deployment_status") or []:
+        status = str(entry.get("status") or "unknown")
+        if project and entry.get("project") == project:
+            return status
+        prefix = entry.get("path_prefix")
+        if manifest and prefix and str(manifest).startswith(str(prefix)):
+            return status
+    if manifest:
+        path = Path(manifest)
+        for parent in [path.parent, *path.parents]:
+            if parent == parent.parent:
+                break
+            if any((parent / marker).exists() for marker in ("vercel.json", "fly.toml", "render.yaml", "railway.json")):
+                return "deployable marker found"
+            if (parent / "Dockerfile").exists():
+                return "container marker found"
+    return "unknown"
+
+
+def exposure_class_for(config: dict[str, Any], exposure: dict[str, Any]) -> str:
+    if not exposure.get("dependency"):
+        return "unmatched intel"
+    deployment_status = deployment_status_for(config, exposure)
+    if deployment_status in {"deployed", "production"}:
+        return "deployed"
+    dep = exposure["dependency"]
+    manifest = str(dep.get("manifest") or "")
+    source = str(dep.get("source") or "")
+    if source in {"devDependencies", "tool.poetry.dev-dependencies"} or ".dev-dependencies" in source or ".group.dev" in source or source.endswith(".develop"):
+        return "dev dependency"
+    if Path(manifest).name in {"package-lock.json", "npm-shrinkwrap.json", "poetry.lock", "Pipfile.lock", "Cargo.lock", "Gemfile.lock"}:
+        return "lockfile-only"
+    return "active repo"
+
+
+def urgency_for(exposure: dict[str, Any], exposure_class: str) -> str:
+    if exposure_class == "deployed":
+        return "critical"
+    if exposure.get("kind") == "direct-package" and exposure_class == "active repo":
+        return "high"
+    if exposure.get("kind") == "watched-surface-package":
+        return "high"
+    if exposure_class == "lockfile-only":
+        return "medium"
+    if exposure_class == "dev dependency":
+        return "medium"
+    return "watch"
+
+
+def recommended_action_for(exposure: dict[str, Any], exposure_class: str, deployment_status: str) -> str:
+    dep = exposure.get("dependency") or {}
+    package = ""
+    if dep:
+        package = f"{dep.get('ecosystem')}:{dep.get('name')}@{dep.get('version') or 'unknown'}"
+    if exposure_class == "deployed":
+        return f"Confirm runtime exposure, patch or redeploy {package}, and add a post-fix scan note."
+    if exposure_class == "active repo":
+        return f"Upgrade or remove {package}; rerun tests and the scanner."
+    if exposure_class == "lockfile-only":
+        return f"Check whether {package} is transitive/runtime; update the parent dependency or refresh the lockfile."
+    if exposure_class == "dev dependency":
+        return f"Update dev tooling package {package}; prioritize if CI or build artifacts consume untrusted input."
+    if exposure_class == "unmatched intel":
+        return "Verify whether this product/surface is used in any project or deployment; add package or deployment mapping if yes."
+    return f"Review {package or 'the finding'} and classify deployment status."
+
+
+def project_directory_for(exposure: dict[str, Any]) -> str:
+    dep = exposure.get("dependency") or {}
+    manifest = dep.get("manifest")
+    if manifest:
+        return str(Path(manifest).parent)
+    return exposure.get("project") or "unmatched"
+
+
+def vulnerability_label_for(exposure: dict[str, Any]) -> str:
+    advisory = exposure.get("advisory_id")
+    title = exposure.get("title") or "untitled"
+    return f"{advisory}: {title}" if advisory else title
+
+
+def build_action_view(config: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, str]]:
+    rows = []
+    urgency_order = {"critical": 0, "high": 1, "medium": 2, "watch": 3}
+    class_order = {"deployed": 0, "active repo": 1, "lockfile-only": 2, "dev dependency": 3, "unmatched intel": 4}
+    for exposure in payload.get("exposures") or []:
+        exposure_class = exposure_class_for(config, exposure)
+        deployment_status = deployment_status_for(config, exposure)
+        urgency = urgency_for(exposure, exposure_class)
+        rows.append(
+            {
+                "urgency": urgency,
+                "vulnerability": vulnerability_label_for(exposure),
+                "project_directory": project_directory_for(exposure),
+                "deployment_status": deployment_status,
+                "severity": exposure_class,
+                "recommended_action": recommended_action_for(exposure, exposure_class, deployment_status),
+                "fingerprint": exposure.get("fingerprint") or exposure_fingerprint_dict(exposure),
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            urgency_order.get(row["urgency"], 9),
+            class_order.get(row["severity"], 9),
+            row["project_directory"],
+            row["vulnerability"],
+        ),
+    )
+
+
 def compute_delta(current: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
     current_exposures = current.get("exposures", [])
     for exposure in current_exposures:
@@ -962,6 +1079,29 @@ def markdown_report(payload: dict[str, Any]) -> str:
         for source in payload["source_failures"]:
             lines.append(f"- {source}")
         lines.append("")
+    if payload.get("action_view"):
+        lines.append("## Action View")
+        lines.append("| Urgency | Vulnerability | Project/Directory | Deployment Status | Severity | Recommended Action |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
+        for row in payload["action_view"][: payload["max_report_items"]]:
+            lines.append(
+                "| "
+                + " | ".join(
+                    markdown_table_cell(row[key])
+                    for key in (
+                        "urgency",
+                        "vulnerability",
+                        "project_directory",
+                        "deployment_status",
+                        "severity",
+                        "recommended_action",
+                    )
+                )
+                + " |"
+            )
+        if len(payload["action_view"]) > payload["max_report_items"]:
+            lines.append(f"- ... {len(payload['action_view']) - payload['max_report_items']} more action rows in the JSON report.")
+        lines.append("")
     if payload["exposures"]:
         lines.append("## Exposures")
         exposure_limit = payload["max_report_items"]
@@ -1008,6 +1148,12 @@ def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(payload, default=dataclass_to_dict))
 
 
+def markdown_table_cell(value: Any) -> str:
+    text = str(value or "")
+    text = text.replace("|", "\\|").replace("\n", " ")
+    return text
+
+
 def write_reports(config: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, Path]:
     report_dir = Path(config.get("report_dir", "~/.codex/vuln-watch/reports")).expanduser()
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -1018,6 +1164,7 @@ def write_reports(config: dict[str, Any], payload: dict[str, Any]) -> tuple[Path
     payload.clear()
     payload.update(normalized)
     add_delta_to_payload(payload, report_dir, current_json_path=json_path)
+    payload["action_view"] = build_action_view(config, payload)
     json_path.write_text(json.dumps(payload, indent=2) + "\n")
     loaded = json.loads(json_path.read_text())
     md_path.write_text(markdown_report(loaded))
