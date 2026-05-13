@@ -1,0 +1,41 @@
+{
+  "name": "guardtower",
+  "version": "0.1.0",
+  "description": "Daily vulnerability intelligence and local project exposure scanner.",
+  "author": {
+    "name": "Joseph",
+    "email": "local@example.invalid",
+    "url": "https://example.invalid/guardtower"
+  },
+  "homepage": "https://example.invalid/guardtower",
+  "repository": "https://github.com/abbudjoe/guardtower",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "vulnerability",
+    "supply-chain",
+    "codex-automation"
+  ],
+  "skills": "./plugins/guardtower/skills/",
+  "interface": {
+    "displayName": "Guardtower",
+    "shortDescription": "Daily exploit watch with local dependency exposure checks.",
+    "longDescription": "Searches vulnerability sources, optional X recent search, and local dependency manifests to report whether active projects appear exposed to current exploited packages or products.",
+    "developerName": "Joseph",
+    "category": "Security",
+    "capabilities": [
+      "Interactive",
+      "Network",
+      "Read"
+    ],
+    "websiteURL": "https://github.com/abbudjoe/guardtower",
+    "privacyPolicyURL": "https://example.invalid/privacy",
+    "termsOfServiceURL": "https://example.invalid/terms",
+    "defaultPrompt": [
+      "Run today's vulnerability exposure scan.",
+      "Show projects matching current exploited packages.",
+      "Update Guardtower config for a new repo root."
+    ],
+    "brandColor": "#D97706"
+  }
+}

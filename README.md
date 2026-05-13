@@ -2,6 +2,8 @@
 
 Guardtower is a Codex plugin for scheduled vulnerability exposure checks across local projects and deployment surfaces.
 
+The root `.codex-plugin/plugin.json` is the installable Codex plugin manifest. The implementation lives in `plugins/guardtower`.
+
 It inventories dependency manifests, checks exact package/version exposure through OSV, pulls current vulnerability intelligence from CISA KEV, NVD, RSS feeds, and optional X recent search, then writes timestamped Markdown and JSON reports with:
 
 - new, resolved, still-present, and source-failure-aware exposure deltas
