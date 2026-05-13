@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 import json
 import sys
@@ -44,6 +45,12 @@ class SurfaceNameMatchingTests(unittest.TestCase):
                 "Next.js is a React framework for building full-stack web applications.",
             )
         )
+        self.assertFalse(
+            guardtower.surface_name_matches(
+                "React",
+                "Next.js applications using React Server Components can be vulnerable to cache poisoning.",
+            )
+        )
         self.assertTrue(guardtower.surface_name_matches("React", "React DOM exploit chain disclosed."))
 
 
@@ -55,6 +62,55 @@ class DependencyVersionParsingTests(unittest.TestCase):
     def test_exact_versions_are_preserved(self) -> None:
         self.assertEqual(guardtower.clean_version("pillow==10.4.0"), "10.4.0")
         self.assertEqual(guardtower.clean_version("10.4.0"), "10.4.0")
+
+    def test_watched_surface_range_text_filters_fixed_versions(self) -> None:
+        text = (
+            "Next.js is a React framework for building full-stack web applications. "
+            "From 12.2.0 to before 15.5.16 and 16.2.5, applications can allow "
+            "unauthorized access."
+        )
+
+        self.assertFalse(guardtower.version_is_in_affected_range("15.5.18", text))
+        self.assertTrue(guardtower.version_is_in_affected_range("15.5.15", text))
+        self.assertTrue(guardtower.version_is_in_affected_range("14.2.8", text))
+        self.assertFalse(guardtower.version_is_in_affected_range("16.2.5", text))
+
+    def test_watched_surface_exposures_skip_versions_outside_advisory_range(self) -> None:
+        config = {
+            "watched_surfaces": [
+                {
+                    "id": "nextjs",
+                    "names": ["Next.js"],
+                    "packages": [{"ecosystem": "npm", "name": "next"}],
+                }
+            ]
+        }
+        fixed_dep = guardtower.Dependency(
+            ecosystem="npm",
+            name="next",
+            version="15.5.18",
+            project="web",
+            manifest="/workspace/web/package.json",
+            source="dependencies",
+        )
+        affected_dep = dataclasses.replace(fixed_dep, version="15.5.15")
+        item = guardtower.ThreatItem(
+            source="nvd-recent",
+            title="CVE-2026-44572: Next.js affected before 15.5.16 and 16.2.5",
+            url="https://example.test",
+            published=None,
+            cves=("CVE-2026-44572",),
+            text=(
+                "Next.js is a React framework for building full-stack web applications. "
+                "From 12.2.0 to before 15.5.16 and 16.2.5, an external client could "
+                "send a crafted request."
+            ),
+        )
+
+        exposures = guardtower.build_threat_exposures(config, [fixed_dep, affected_dep], [item])
+
+        self.assertEqual(len(exposures), 1)
+        self.assertEqual(exposures[0].dependency.version, "15.5.15")
 
 
 class ReportFormattingTests(unittest.TestCase):

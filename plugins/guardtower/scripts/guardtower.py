@@ -763,7 +763,81 @@ def surface_name_matches(name: str, text: str) -> bool:
     pattern = re.compile(f"{prefix}{escaped}{suffix}", re.IGNORECASE)
     for match in pattern.finditer(text):
         following = text[match.end() : match.end() + 40]
-        if needle.lower() == "react" and re.match(r"\s+framework\b", following, re.IGNORECASE):
+        if needle.lower() == "react" and re.match(
+            r"\s+(?:framework|server\s+components?)\b",
+            following,
+            re.IGNORECASE,
+        ):
+            continue
+        return True
+    return False
+
+
+def parse_version_tuple(value: str | None) -> tuple[int, ...] | None:
+    if not value:
+        return None
+    match = re.match(r"v?(\d+(?:\.\d+){0,3})", value.strip(), flags=re.IGNORECASE)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def compare_versions(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    width = max(len(left), len(right))
+    padded_left = left + (0,) * (width - len(left))
+    padded_right = right + (0,) * (width - len(right))
+    if padded_left < padded_right:
+        return -1
+    if padded_left > padded_right:
+        return 1
+    return 0
+
+
+def extracted_affected_ranges(text: str) -> list[tuple[tuple[int, ...] | None, list[tuple[int, ...]]]]:
+    ranges: list[tuple[tuple[int, ...] | None, list[tuple[int, ...]]]] = []
+    version = r"v?\d+(?:\.\d+){0,3}"
+    patterns = (
+        re.compile(
+            rf"\b[Ff]rom\s+({version})\s+to\s+before\s+({version})(?:\s+and\s+({version}))?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"\b[Bb]efore\s+({version})(?:\s+and\s+({version}))?",
+            re.IGNORECASE,
+        ),
+    )
+    for match in patterns[0].finditer(text):
+        lower = parse_version_tuple(match.group(1))
+        fixed = [parsed for raw in match.groups()[1:] if (parsed := parse_version_tuple(raw))]
+        if fixed:
+            ranges.append((lower, fixed))
+    for match in patterns[1].finditer(text):
+        fixed = [parsed for raw in match.groups() if (parsed := parse_version_tuple(raw))]
+        if fixed:
+            ranges.append((None, fixed))
+    return ranges
+
+
+def version_is_in_affected_range(version: str | None, text: str) -> bool:
+    installed = parse_version_tuple(version)
+    if not installed:
+        return True
+    ranges = extracted_affected_ranges(text)
+    if not ranges:
+        return True
+    installed_major = installed[0]
+    for lower, fixed_versions in ranges:
+        if lower and compare_versions(installed, lower) < 0:
+            continue
+        same_major_fixed = sorted(fixed for fixed in fixed_versions if fixed[0] == installed_major)
+        if same_major_fixed:
+            if compare_versions(installed, same_major_fixed[0]) < 0:
+                return True
+            continue
+        fixed_majors = [fixed[0] for fixed in fixed_versions]
+        if installed_major < min(fixed_majors):
+            return True
+        if installed_major > max(fixed_majors):
             continue
         return True
     return False
@@ -811,6 +885,8 @@ def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency
                 direct_matches.extend(package_index.get(key, []))
             if direct_matches:
                 for dep in direct_matches:
+                    if not version_is_in_affected_range(dep.version, text):
+                        continue
                     exposures.append(
                         Exposure(
                             kind="watched-surface-package",
