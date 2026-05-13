@@ -734,15 +734,23 @@ def surface_package_index(config: dict[str, Any]) -> dict[tuple[str, str], list[
 
 
 def surface_name_hits(config: dict[str, Any], text: str) -> list[dict[str, Any]]:
-    haystack = text.lower()
     hits = []
     for surface in config.get("watched_surfaces") or []:
         for name in surface.get("names") or []:
-            needle = str(name).lower()
-            if needle and needle in haystack:
+            if surface_name_matches(str(name), text):
                 hits.append(surface)
                 break
     return hits
+
+
+def surface_name_matches(name: str, text: str) -> bool:
+    needle = name.strip()
+    if not needle:
+        return False
+    escaped = re.escape(needle)
+    prefix = r"(?<![A-Za-z0-9_@./-])" if needle[0].isalnum() else ""
+    suffix = r"(?![A-Za-z0-9_@./-])" if needle[-1].isalnum() else ""
+    return re.search(f"{prefix}{escaped}{suffix}", text, re.IGNORECASE) is not None
 
 
 def build_osv_exposures(dependencies: list[Dependency], osv_results: dict[tuple[str, str, str | None], list[dict[str, Any]]]) -> list[Exposure]:
@@ -981,7 +989,7 @@ def urgency_for(exposure: dict[str, Any], exposure_class: str) -> str:
     if exposure.get("kind") == "direct-package" and exposure_class == "active repo":
         return "high"
     if exposure.get("kind") == "watched-surface-package":
-        return "high"
+        return "medium"
     if exposure_class == "lockfile-only":
         return "medium"
     if exposure_class == "dev dependency":
@@ -994,6 +1002,8 @@ def recommended_action_for(exposure: dict[str, Any], exposure_class: str, deploy
     package = ""
     if dep:
         package = f"{dep.get('ecosystem')}:{dep.get('name')}@{dep.get('version') or 'unknown'}"
+    if exposure.get("kind") == "watched-surface-package":
+        return f"Review whether the intel applies to {package}; if the installed version is affected, patch and rerun Guardtower."
     if exposure_class == "deployed":
         return f"Confirm runtime exposure, patch or redeploy {package}, and add a post-fix scan note."
     if exposure_class == "active repo":
@@ -1085,6 +1095,9 @@ def cluster_action_for(cluster: dict[str, Any]) -> str:
     package = cluster.get("package") or "unmatched intel"
     severity = cluster.get("severity")
     urgency = cluster.get("urgency")
+    kinds = set(cluster.get("kinds") or [])
+    if "direct-package" not in kinds and "watched-surface-package" in kinds:
+        return f"Review whether the intel applies to {package}; if the installed version is affected, patch and rerun Guardtower."
     if severity == "deployed" or urgency == "critical":
         return f"Confirm runtime exposure for {package}, patch or pin safely, redeploy, then rerun Guardtower."
     if severity == "active repo":
@@ -1124,6 +1137,7 @@ def build_remediation_clusters(config: dict[str, Any], payload: dict[str, Any]) 
                 "severity_classes": set(),
                 "advisories": set(),
                 "sources": set(),
+                "kinds": set(),
                 "exposure_count": 0,
                 "attribution_commands": set(),
             },
@@ -1136,6 +1150,7 @@ def build_remediation_clusters(config: dict[str, Any], payload: dict[str, Any]) 
         cluster["deployment_statuses"].add(deployment_status)
         cluster["severity_classes"].add(exposure_class)
         cluster["sources"].add(str(exposure.get("source") or "unknown"))
+        cluster["kinds"].add(str(exposure.get("kind") or "unknown"))
         if exposure.get("advisory_id"):
             for advisory in str(exposure["advisory_id"]).split(","):
                 advisory = advisory.strip()
@@ -1167,6 +1182,7 @@ def build_remediation_clusters(config: dict[str, Any], payload: dict[str, Any]) 
             "advisory_count": len(advisories),
             "advisories": advisories,
             "sources": sorted(cluster["sources"]),
+            "kinds": sorted(cluster["kinds"]),
             "attribution_commands": commands,
         }
         row["recommended_action"] = cluster_action_for(row)
