@@ -7,6 +7,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import email.utils
+import hashlib
 import json
 import os
 import re
@@ -26,6 +27,7 @@ CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_v
 NVD_CVES_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 X_RECENT_SEARCH_URL = "https://api.twitter.com/2/tweets/search/recent"
 DEFAULT_TIMEOUT_SECONDS = 25
+SOURCE_FAILURES: set[str] = set()
 
 
 ECOSYSTEM_ALIASES = {
@@ -72,6 +74,7 @@ class ThreatItem:
 class Exposure:
     kind: str
     severity: str
+    source: str
     project: str | None
     dependency: Dependency | None
     title: str
@@ -122,6 +125,11 @@ def request_text(url: str) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": "codex-vuln-watch/0.1"})
     with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
         return response.read().decode("utf-8", errors="replace")
+
+
+def record_source_failure(source: str, message: str) -> None:
+    SOURCE_FAILURES.add(source)
+    print(message, file=sys.stderr)
 
 
 def project_name_for(path: Path) -> str:
@@ -445,7 +453,7 @@ def fetch_osv_vulnerabilities(
         try:
             payload = request_json(OSV_QUERY_BATCH_URL, headers={"Content-Type": "application/json", "User-Agent": "codex-vuln-watch/0.1"}, data=data)
         except Exception as exc:  # noqa: BLE001
-            print(f"warning: OSV query failed: {exc}", file=sys.stderr)
+            record_source_failure("osv", f"warning: OSV query failed: {exc}")
             continue
         for (key, _query), result in zip(chunk, payload.get("results", []), strict=False):
             vulns = result.get("vulns") if isinstance(result, dict) else None
@@ -484,7 +492,7 @@ def fetch_cisa_kev(days_back: int, no_network: bool) -> list[ThreatItem]:
     try:
         payload = request_json(CISA_KEV_URL)
     except Exception as exc:  # noqa: BLE001
-        print(f"warning: CISA KEV fetch failed: {exc}", file=sys.stderr)
+        record_source_failure("cisa-kev", f"warning: CISA KEV fetch failed: {exc}")
         return []
     items = []
     for vuln in payload.get("vulnerabilities", []) or []:
@@ -520,7 +528,7 @@ def fetch_nvd_recent(days_back: int, no_network: bool) -> list[ThreatItem]:
     try:
         payload = request_json(url)
     except Exception as exc:  # noqa: BLE001
-        print(f"warning: NVD recent fetch failed: {exc}", file=sys.stderr)
+        record_source_failure("nvd-recent", f"warning: NVD recent fetch failed: {exc}")
         return []
     items: list[ThreatItem] = []
     for wrapper in payload.get("vulnerabilities", []) or []:
@@ -578,7 +586,8 @@ def fetch_rss_items(urls: list[str], days_back: int, no_network: bool) -> list[T
             text = request_text(url)
             root = ET.fromstring(text)
         except Exception as exc:  # noqa: BLE001
-            print(f"warning: RSS fetch failed for {url}: {exc}", file=sys.stderr)
+            source = f"rss:{urllib.parse.urlparse(url).netloc}"
+            record_source_failure(source, f"warning: RSS fetch failed for {url}: {exc}")
             continue
         candidates = root.findall(".//item") or root.findall("{http://www.w3.org/2005/Atom}entry")
         for node in candidates[:40]:
@@ -614,7 +623,7 @@ def fetch_x_recent(config: dict[str, Any], no_network: bool) -> list[ThreatItem]
         return []
     token = os.environ.get(x_config.get("bearer_token_env", "X_BEARER_TOKEN"))
     if not token:
-        print("warning: X recent search skipped; X_BEARER_TOKEN is not set", file=sys.stderr)
+        record_source_failure("x-recent", "warning: X recent search skipped; X_BEARER_TOKEN is not set")
         return []
     items: list[ThreatItem] = []
     max_results = int(x_config.get("max_results_per_query", 10))
@@ -628,10 +637,10 @@ def fetch_x_recent(config: dict[str, Any], no_network: bool) -> list[ThreatItem]
         try:
             payload = request_json(url, headers={"Authorization": f"Bearer {token}", "User-Agent": "codex-vuln-watch/0.1"})
         except urllib.error.HTTPError as exc:
-            print(f"warning: X recent search failed for {query!r}: HTTP {exc.code}", file=sys.stderr)
+            record_source_failure("x-recent", f"warning: X recent search failed for {query!r}: HTTP {exc.code}")
             continue
         except Exception as exc:  # noqa: BLE001
-            print(f"warning: X recent search failed for {query!r}: {exc}", file=sys.stderr)
+            record_source_failure("x-recent", f"warning: X recent search failed for {query!r}: {exc}")
             continue
         for tweet in payload.get("data", []) or []:
             text = tweet.get("text", "")
@@ -686,6 +695,7 @@ def build_osv_exposures(dependencies: list[Dependency], osv_results: dict[tuple[
                     Exposure(
                         kind="direct-package",
                         severity="high",
+                        source="osv",
                         project=dep.project,
                         dependency=dep,
                         title=vuln.get("summary") or vuln.get("details", "")[:140] or advisory_id,
@@ -716,6 +726,7 @@ def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency
                         Exposure(
                             kind="watched-surface-package",
                             severity="medium",
+                            source=item.source,
                             project=dep.project,
                             dependency=dep,
                             title=item.title,
@@ -729,6 +740,7 @@ def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency
                     Exposure(
                         kind="watched-surface-mention",
                         severity="info",
+                        source=item.source,
                         project=None,
                         dependency=None,
                         title=item.title,
@@ -754,6 +766,165 @@ def unique_exposures(exposures: list[Exposure]) -> list[Exposure]:
     return sorted(output, key=lambda item: (severity_order.get(item.severity, 9), item.project or "", item.title))
 
 
+def exposure_fingerprint_dict(exposure: dict[str, Any]) -> str:
+    dep = exposure.get("dependency") or {}
+    identity = {
+        "kind": exposure.get("kind"),
+        "project": exposure.get("project"),
+        "ecosystem": dep.get("ecosystem"),
+        "name": dep.get("name"),
+        "version": dep.get("version"),
+        "advisory_id": exposure.get("advisory_id"),
+        "url": exposure.get("url"),
+        "title": exposure.get("title"),
+    }
+    stable = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+
+
+def attach_exposure_fingerprints(payload: dict[str, Any]) -> None:
+    for exposure in payload.get("exposures", []):
+        if isinstance(exposure, dict):
+            exposure["fingerprint"] = exposure_fingerprint_dict(exposure)
+
+
+def report_json_paths(report_dir: Path) -> list[Path]:
+    return sorted(path for path in report_dir.glob("*.json") if path.is_file())
+
+
+def report_is_comparable(payload: dict[str, Any], *, require_network_enabled: bool) -> bool:
+    scan = payload.get("scan")
+    if isinstance(scan, dict):
+        return bool(scan.get("network_enabled")) if require_network_enabled else True
+    summary = payload.get("summary") or {}
+    if require_network_enabled and summary.get("threat_items", 0) == 0 and summary.get("exposures", 0) == 0:
+        return False
+    return True
+
+
+def infer_exposure_source(exposure: dict[str, Any]) -> str | None:
+    source = exposure.get("source")
+    if source:
+        return str(source)
+    evidence = str(exposure.get("evidence") or "")
+    if evidence.startswith("OSV reports"):
+        return "osv"
+    match = re.match(r"([^ ]+) mentions watched surface", evidence)
+    if match:
+        return match.group(1)
+    return None
+
+
+def load_previous_report(
+    report_dir: Path,
+    current_json_path: Path | None = None,
+    *,
+    require_network_enabled: bool,
+) -> dict[str, Any] | None:
+    paths = report_json_paths(report_dir)
+    if current_json_path is not None:
+        paths = [path for path in paths if path.resolve() != current_json_path.resolve()]
+    for path in reversed(paths):
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:  # noqa: BLE001 - skip corrupted or partial reports.
+            continue
+        if (
+            isinstance(payload, dict)
+            and isinstance(payload.get("exposures"), list)
+            and report_is_comparable(payload, require_network_enabled=require_network_enabled)
+        ):
+            return payload
+    return None
+
+
+def exposure_label(exposure: dict[str, Any]) -> str:
+    dep = exposure.get("dependency") or {}
+    package = ""
+    if dep:
+        package = f" {dep.get('ecosystem')}:{dep.get('name')}@{dep.get('version') or 'unknown'}"
+    project = f" in {exposure.get('project')}" if exposure.get("project") else ""
+    advisory = f" [{exposure.get('advisory_id')}]" if exposure.get("advisory_id") else ""
+    return f"{exposure.get('severity')} {exposure.get('kind')}{project}{package}{advisory}: {exposure.get('title')}"
+
+
+def compute_delta(current: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
+    current_exposures = current.get("exposures", [])
+    for exposure in current_exposures:
+        if isinstance(exposure, dict) and not exposure.get("fingerprint"):
+            exposure["fingerprint"] = exposure_fingerprint_dict(exposure)
+    if not previous:
+        return {
+            "previous_report": None,
+            "new": len(current_exposures),
+            "resolved": 0,
+            "persisting": 0,
+            "not_observed_due_to_source_failure": 0,
+            "new_exposures": current_exposures,
+            "resolved_exposures": [],
+            "persisting_exposures": [],
+            "not_observed_exposures": [],
+        }
+
+    previous_exposures = previous.get("exposures", [])
+    for exposure in previous_exposures:
+        if isinstance(exposure, dict) and not exposure.get("fingerprint"):
+            exposure["fingerprint"] = exposure_fingerprint_dict(exposure)
+    previous_by_id = {
+        exposure["fingerprint"]: exposure
+        for exposure in previous_exposures
+        if isinstance(exposure, dict) and exposure.get("fingerprint")
+    }
+    current_by_id = {
+        exposure["fingerprint"]: exposure
+        for exposure in current_exposures
+        if isinstance(exposure, dict) and exposure.get("fingerprint")
+    }
+    new_ids = sorted(set(current_by_id) - set(previous_by_id))
+    failed_sources = set(current.get("source_failures") or [])
+    raw_resolved_ids = sorted(set(previous_by_id) - set(current_by_id))
+    blocked_resolved_ids = [
+        item
+        for item in raw_resolved_ids
+        if infer_exposure_source(previous_by_id[item]) in failed_sources
+    ]
+    resolved_ids = [
+        item
+        for item in raw_resolved_ids
+        if item not in set(blocked_resolved_ids)
+    ]
+    persisting_ids = sorted(set(current_by_id) & set(previous_by_id))
+    return {
+        "previous_report": previous.get("generated_at"),
+        "new": len(new_ids),
+        "resolved": len(resolved_ids),
+        "persisting": len(persisting_ids),
+        "not_observed_due_to_source_failure": len(blocked_resolved_ids),
+        "new_exposures": [current_by_id[item] for item in new_ids],
+        "resolved_exposures": [previous_by_id[item] for item in resolved_ids],
+        "persisting_exposures": [current_by_id[item] for item in persisting_ids],
+        "not_observed_exposures": [previous_by_id[item] for item in blocked_resolved_ids],
+    }
+
+
+def add_delta_to_payload(payload: dict[str, Any], report_dir: Path, current_json_path: Path | None = None) -> None:
+    attach_exposure_fingerprints(payload)
+    require_network_enabled = bool((payload.get("scan") or {}).get("network_enabled"))
+    previous = None
+    if require_network_enabled:
+        previous = load_previous_report(
+            report_dir,
+            current_json_path,
+            require_network_enabled=True,
+        )
+    delta = compute_delta(payload, previous)
+    payload["delta"] = delta
+    payload["summary"]["new_exposures"] = delta["new"]
+    payload["summary"]["resolved_exposures"] = delta["resolved"]
+    payload["summary"]["persisting_exposures"] = delta["persisting"]
+    payload["summary"]["not_observed_due_to_source_failure"] = delta["not_observed_due_to_source_failure"]
+
+
 def markdown_report(payload: dict[str, Any]) -> str:
     lines = [
         f"# Vuln Watch Report - {payload['generated_at']}",
@@ -762,8 +933,35 @@ def markdown_report(payload: dict[str, Any]) -> str:
         f"- Projects with manifests: {payload['summary']['projects']}",
         f"- Threat intelligence items: {payload['summary']['threat_items']}",
         f"- Exposures: {payload['summary']['exposures']}",
+        f"- New since previous report: {payload['summary'].get('new_exposures', 0)}",
+        f"- Resolved since previous report: {payload['summary'].get('resolved_exposures', 0)}",
+        f"- Still present: {payload['summary'].get('persisting_exposures', 0)}",
+        f"- Not observed because a source failed: {payload['summary'].get('not_observed_due_to_source_failure', 0)}",
         "",
     ]
+    delta = payload.get("delta") or {}
+    if delta:
+        previous = delta.get("previous_report") or "none"
+        lines.append(f"## Delta")
+        lines.append(f"- Previous report: {previous}")
+        lines.append(f"- New: {delta.get('new', 0)}")
+        lines.append(f"- Resolved: {delta.get('resolved', 0)}")
+        lines.append(f"- Still present: {delta.get('persisting', 0)}")
+        lines.append(f"- Not observed because a source failed: {delta.get('not_observed_due_to_source_failure', 0)}")
+        for label, key in (("New", "new_exposures"), ("Resolved", "resolved_exposures")):
+            values = delta.get(key) or []
+            if values:
+                lines.append(f"### {label} Exposures")
+                for exposure in values[: payload["max_report_items"]]:
+                    lines.append(f"- {exposure_label(exposure)}")
+                if len(values) > payload["max_report_items"]:
+                    lines.append(f"- ... {len(values) - payload['max_report_items']} more in the JSON report.")
+        lines.append("")
+    if payload.get("source_failures"):
+        lines.append("## Source Failures")
+        for source in payload["source_failures"]:
+            lines.append(f"- {source}")
+        lines.append("")
     if payload["exposures"]:
         lines.append("## Exposures")
         exposure_limit = payload["max_report_items"]
@@ -806,19 +1004,28 @@ def dataclass_to_dict(value: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(value)!r}")
 
 
+def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(payload, default=dataclass_to_dict))
+
+
 def write_reports(config: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, Path]:
     report_dir = Path(config.get("report_dir", "~/.codex/vuln-watch/reports")).expanduser()
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = utc_now().strftime("%Y-%m-%dT%H%M%SZ")
     json_path = report_dir / f"{stamp}.json"
     md_path = report_dir / f"{stamp}.md"
-    json_path.write_text(json.dumps(payload, indent=2, default=dataclass_to_dict) + "\n")
+    normalized = normalize_payload(payload)
+    payload.clear()
+    payload.update(normalized)
+    add_delta_to_payload(payload, report_dir, current_json_path=json_path)
+    json_path.write_text(json.dumps(payload, indent=2) + "\n")
     loaded = json.loads(json_path.read_text())
     md_path.write_text(markdown_report(loaded))
     return json_path, md_path
 
 
 def build_report(config: dict[str, Any], no_network: bool) -> tuple[dict[str, Any], list[Exposure]]:
+    SOURCE_FAILURES.clear()
     dependencies, parser_errors = inventory_dependencies(config)
     intel_config = config.get("threat_intel") or {}
     days_back = int(intel_config.get("days_back", 3))
@@ -842,6 +1049,9 @@ def build_report(config: dict[str, Any], no_network: bool) -> tuple[dict[str, An
     projects = sorted({dep.project for dep in dependencies})
     payload = {
         "generated_at": iso_date(utc_now()),
+        "scan": {
+            "network_enabled": not no_network,
+        },
         "summary": {
             "dependencies": len(dependencies),
             "projects": len(projects),
@@ -852,6 +1062,7 @@ def build_report(config: dict[str, Any], no_network: bool) -> tuple[dict[str, An
         "dependencies": dependencies,
         "threat_items": threat_items,
         "exposures": exposures,
+        "source_failures": sorted(SOURCE_FAILURES),
         "parser_errors": parser_errors,
         "max_report_items": int((config.get("alert") or {}).get("max_report_items", 50)),
     }
@@ -872,6 +1083,15 @@ def main() -> int:
     print(f"Wrote JSON report: {json_path}")
     print(f"Wrote Markdown report: {md_path}")
     print(json.dumps(payload["summary"], indent=2))
+    delta = payload.get("delta") or {}
+    if delta:
+        print(
+            "Delta: "
+            f"{delta.get('new', 0)} new, "
+            f"{delta.get('resolved', 0)} resolved, "
+            f"{delta.get('persisting', 0)} still present, "
+            f"{delta.get('not_observed_due_to_source_failure', 0)} not observed due to source failure"
+        )
     direct = [item for item in exposures if item.kind in {"direct-package", "watched-surface-package"}]
     if direct:
         print("Direct/package-linked exposures:")

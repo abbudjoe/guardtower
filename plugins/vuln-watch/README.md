@@ -8,7 +8,7 @@ It does three things in one deterministic pass:
 2. Queries OSV for known vulnerabilities in those packages.
 3. Pulls current threat intelligence from CISA KEV, NVD recent CVEs, RSS feeds, and optional X recent search, then matches those items against explicit watched surfaces.
 
-Reports are written to `/Users/joseph/.codex/vuln-watch/reports` by default as timestamped Markdown and JSON files.
+Reports are written to `/Users/joseph/.codex/vuln-watch/reports` by default as timestamped Markdown and JSON files. Each report compares against the latest previous JSON report and includes new, resolved, and still-present exposure counts.
 
 ## Run
 
