@@ -2,21 +2,23 @@
 
 Guardtower is a Codex plugin for scheduled vulnerability exposure checks across local projects and deployment surfaces.
 
-The current plugin, `vuln-watch`, inventories dependency manifests, checks exact package/version exposure through OSV, pulls current vulnerability intelligence from CISA KEV, NVD, RSS feeds, and optional X recent search, then writes timestamped Markdown and JSON reports with new/resolved/still-present exposure deltas and an action view for triage.
+The current plugin, `guardtower`, inventories dependency manifests, checks exact package/version exposure through OSV, pulls current vulnerability intelligence from CISA KEV, NVD, RSS feeds, and optional X recent search, then writes timestamped Markdown and JSON reports with new/resolved/still-present exposure deltas and an action view for triage.
 
 ## Run Locally
 
 ```bash
-python3 plugins/vuln-watch/scripts/vuln_watch.py --config plugins/vuln-watch/config.json
+python3 plugins/guardtower/scripts/guardtower.py --config plugins/guardtower/config.json
 ```
 
 Set `X_BEARER_TOKEN` to enable X recent search. Without it, the scanner still uses OSV, CISA KEV, NVD, and RSS sources.
+
+Threat-intel matching is intentionally strict: generic AI/tech news roundups, newsletters, and meta-discussion replies are filtered out unless the item is centered on a concrete security exploit, CVE, compromised package, or actively exploited vulnerability.
 
 Set `VERCEL_TOKEN` to enable Vercel production deployment discovery. Optional `VERCEL_TEAM_ID` or `VERCEL_TEAM_SLUG` scopes API requests to a team.
 
 ## Reports
 
-Reports are written to `/Users/joseph/.codex/vuln-watch/reports` by default. Edit `plugins/vuln-watch/config.json` to change scan roots, watched surfaces, or report paths.
+Reports are written to `/Users/joseph/.codex/guardtower/reports` by default. Edit `plugins/guardtower/config.json` to change scan roots, watched surfaces, or report paths.
 
 ## Deployment Discovery
 

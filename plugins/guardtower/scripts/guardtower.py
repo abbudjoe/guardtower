@@ -114,7 +114,7 @@ def request_json(url: str, *, headers: dict[str, str] | None = None, data: bytes
     request = urllib.request.Request(
         url,
         data=data,
-        headers=headers or {"User-Agent": "codex-vuln-watch/0.1"},
+        headers=headers or {"User-Agent": "codex-guardtower/0.1"},
         method="POST" if data is not None else "GET",
     )
     with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
@@ -122,7 +122,7 @@ def request_json(url: str, *, headers: dict[str, str] | None = None, data: bytes
 
 
 def request_text(url: str) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": "codex-vuln-watch/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "codex-guardtower/0.1"})
     with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
         return response.read().decode("utf-8", errors="replace")
 
@@ -137,7 +137,7 @@ def request_json_auth(url: str, token: str) -> Any:
         url,
         headers={
             "Authorization": f"Bearer {token}",
-            "User-Agent": "codex-vuln-watch/0.1",
+            "User-Agent": "codex-guardtower/0.1",
         },
     )
 
@@ -461,7 +461,7 @@ def fetch_osv_vulnerabilities(
     for chunk in chunked(ordered_queries, 500):
         data = json.dumps({"queries": [query for _, query in chunk]}).encode("utf-8")
         try:
-            payload = request_json(OSV_QUERY_BATCH_URL, headers={"Content-Type": "application/json", "User-Agent": "codex-vuln-watch/0.1"}, data=data)
+            payload = request_json(OSV_QUERY_BATCH_URL, headers={"Content-Type": "application/json", "User-Agent": "codex-guardtower/0.1"}, data=data)
         except Exception as exc:  # noqa: BLE001
             record_source_failure("osv", f"warning: OSV query failed: {exc}")
             continue
@@ -475,6 +475,57 @@ def fetch_osv_vulnerabilities(
 
 def extract_cves(text: str) -> tuple[str, ...]:
     return tuple(sorted(set(re.findall(r"CVE-\d{4}-\d{4,7}", text, flags=re.IGNORECASE)), key=str.upper))
+
+
+def is_security_exploit_news(title: str, body: str) -> bool:
+    text = f"{title}\n{body}".lower()
+    roundup_patterns = (
+        r"\btop\s+(?:ai|tech|cybersecurity|security)?\s*news\b",
+        r"\b(?:ai|tech|security|cybersecurity)\s+news\s+today\b",
+        r"\bnewsletter\b",
+        r"\broundup\b",
+        r"\bdaily\s+brief(?:ing)?\b",
+        r"\bweekly\s+brief(?:ing)?\b",
+        r"\bwhat happened today\b",
+        r"\byou don.t understand what you are reading\b",
+        r"\bmost of those items\b",
+        r"\bif you really believe this\b",
+        r"\b\d+\.\s+[^.\n]+(?:\n|\s)+\d+\.\s+",
+    )
+    if any(re.search(pattern, text, re.IGNORECASE) for pattern in roundup_patterns):
+        return False
+
+    if extract_cves(text):
+        return True
+
+    exploit_terms = (
+        r"\bactively exploited\b",
+        r"\bexploited in the wild\b",
+        r"\bin-the-wild exploitation\b",
+        r"\bzero[- ]day\b",
+        r"\b0day\b",
+        r"\bremote code execution\b",
+        r"\brce\b",
+        r"\bprivilege escalation\b",
+        r"\bauthentication bypass\b",
+        r"\bexploit chain\b",
+        r"\bsupply[- ]chain attack\b",
+        r"\bcompromised packages?\b",
+        r"\bmalicious packages?\b",
+        r"\bcache poisoning\b",
+        r"\bcritical vulnerability\b",
+        r"\bemergency patch\b",
+        r"\bsecurity advisory\b",
+    )
+    vulnerability_terms = (
+        r"\bvulnerabilit(?:y|ies)\b",
+        r"\bexploit(?:ed|s|ing|ation)?\b",
+        r"\bpatched\b",
+        r"\bsecurity flaw\b",
+    )
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in exploit_terms) and any(
+        re.search(pattern, text, re.IGNORECASE) for pattern in vulnerability_terms
+    )
 
 
 def parse_datetime(value: str | None) -> dt.datetime | None:
@@ -612,7 +663,7 @@ def fetch_rss_items(urls: list[str], days_back: int, no_network: bool) -> list[T
                 continue
             summary = xml_text(node, ("description", "summary", "{http://www.w3.org/2005/Atom}summary", "{http://www.w3.org/2005/Atom}content")) or ""
             combined = f"{title}\n{summary}"
-            if not re.search(r"(CVE-|vulnerab|exploit|zero.day|0day|supply chain|ransomware|advisory)", combined, re.IGNORECASE):
+            if not is_security_exploit_news(title, summary):
                 continue
             items.append(
                 ThreatItem(
@@ -645,7 +696,7 @@ def fetch_x_recent(config: dict[str, Any], no_network: bool) -> list[ThreatItem]
         }
         url = f"{X_RECENT_SEARCH_URL}?{urllib.parse.urlencode(params)}"
         try:
-            payload = request_json(url, headers={"Authorization": f"Bearer {token}", "User-Agent": "codex-vuln-watch/0.1"})
+            payload = request_json(url, headers={"Authorization": f"Bearer {token}", "User-Agent": "codex-guardtower/0.1"})
         except urllib.error.HTTPError as exc:
             record_source_failure("x-recent", f"warning: X recent search failed for {query!r}: HTTP {exc.code}")
             continue
@@ -654,6 +705,10 @@ def fetch_x_recent(config: dict[str, Any], no_network: bool) -> list[ThreatItem]
             continue
         for tweet in payload.get("data", []) or []:
             text = tweet.get("text", "")
+            if text.lstrip().startswith("@") and not extract_cves(text):
+                continue
+            if not is_security_exploit_news(text[:140], text):
+                continue
             tweet_id = tweet.get("id")
             items.append(
                 ThreatItem(
@@ -1212,7 +1267,7 @@ def add_delta_to_payload(payload: dict[str, Any], report_dir: Path, current_json
 
 def markdown_report(payload: dict[str, Any]) -> str:
     lines = [
-        f"# Vuln Watch Report - {payload['generated_at']}",
+        f"# Guardtower Report - {payload['generated_at']}",
         "",
         f"- Dependencies inventoried: {payload['summary']['dependencies']}",
         f"- Projects with manifests: {payload['summary']['projects']}",
@@ -1348,7 +1403,7 @@ def markdown_table_cell(value: Any) -> str:
 
 
 def write_reports(config: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, Path]:
-    report_dir = Path(config.get("report_dir", "~/.codex/vuln-watch/reports")).expanduser()
+    report_dir = Path(config.get("report_dir", "~/.codex/guardtower/reports")).expanduser()
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = utc_now().strftime("%Y-%m-%dT%H%M%SZ")
     json_path = report_dir / f"{stamp}.json"

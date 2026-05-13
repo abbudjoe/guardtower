@@ -5,10 +5,10 @@
   },
   "plugins": [
     {
-      "name": "vuln-watch",
+      "name": "guardtower",
       "source": {
         "source": "local",
-        "path": "./plugins/vuln-watch"
+        "path": "./plugins/guardtower"
       },
       "policy": {
         "installation": "AVAILABLE",

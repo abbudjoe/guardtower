@@ -2,8 +2,8 @@
   "scan_roots": [
     "/Users/joseph"
   ],
-  "report_dir": "/Users/joseph/.codex/vuln-watch/reports",
-  "state_dir": "/Users/joseph/.codex/vuln-watch/state",
+  "report_dir": "/Users/joseph/.codex/guardtower/reports",
+  "state_dir": "/Users/joseph/.codex/guardtower/state",
   "env_file": "/Users/joseph/guard/.env",
   "deployment_status": [
     {
@@ -92,10 +92,10 @@
       "bearer_token_env": "X_BEARER_TOKEN",
       "max_results_per_query": 10,
       "queries": [
-        "\"zero day\" OR \"0day\" exploit CVE -is:retweet lang:en",
-        "\"supply chain\" npm PyPI compromised package -is:retweet lang:en",
-        "\"Next.js\" advisory OR CVE -is:retweet lang:en",
-        "\"GitHub Actions\" cache poisoning package compromise -is:retweet lang:en"
+        "(\"zero day\" OR \"0day\" OR CVE) (exploit OR exploited OR vulnerability OR RCE) -newsletter -\"top AI news\" -roundup -is:retweet lang:en",
+        "\"supply chain\" (npm OR PyPI) (compromised package OR malicious package OR exploit) -newsletter -roundup -is:retweet lang:en",
+        "\"Next.js\" (advisory OR CVE OR vulnerability OR exploit) -newsletter -roundup -is:retweet lang:en",
+        "\"GitHub Actions\" \"cache poisoning\" (package OR exploit OR compromised) -newsletter -roundup -is:retweet lang:en"
       ]
     }
   },

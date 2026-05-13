@@ -1,6 +1,6 @@
-# Vuln Watch
+# Guardtower
 
-Vuln Watch is a repo-local Codex plugin for daily vulnerability exposure checks.
+Guardtower is a repo-local Codex plugin for daily vulnerability exposure checks.
 
 It does three things in one deterministic pass:
 
@@ -8,7 +8,7 @@ It does three things in one deterministic pass:
 2. Queries OSV for known vulnerabilities in those packages.
 3. Pulls current threat intelligence from CISA KEV, NVD recent CVEs, RSS feeds, and optional X recent search, then matches those items against explicit watched surfaces.
 
-Reports are written to `/Users/joseph/.codex/vuln-watch/reports` by default as timestamped Markdown and JSON files. Each report compares against the latest previous JSON report and includes new, resolved, and still-present exposure counts.
+Reports are written to `/Users/joseph/.codex/guardtower/reports` by default as timestamped Markdown and JSON files. Each report compares against the latest previous JSON report and includes new, resolved, and still-present exposure counts.
 
 Reports also include an Action View table with:
 
@@ -33,8 +33,8 @@ This example uses fictional project names and directories:
 ## Run
 
 ```bash
-python3 /Users/joseph/guard/plugins/vuln-watch/scripts/vuln_watch.py \
-  --config /Users/joseph/guard/plugins/vuln-watch/config.json
+python3 /Users/joseph/guard/plugins/guardtower/scripts/guardtower.py \
+  --config /Users/joseph/guard/plugins/guardtower/config.json
 ```
 
 Set `X_BEARER_TOKEN` to enable X recent search. You can put it in `/Users/joseph/guard/.env`, which is gitignored:
@@ -44,6 +44,8 @@ X_BEARER_TOKEN=your-token-here
 ```
 
 Without it, the scanner still uses OSV, CISA KEV, NVD, and RSS sources.
+
+Threat-intel matching is intentionally strict: generic AI/tech news roundups, newsletters, and meta-discussion replies are filtered out unless the item is centered on a concrete security exploit, CVE, compromised package, or actively exploited vulnerability.
 
 Set `VERCEL_TOKEN` to enable Vercel production deployment discovery:
 
