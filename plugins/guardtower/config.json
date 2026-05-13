@@ -199,6 +199,7 @@
     "exit_nonzero_on_direct_match": false,
     "max_report_items": 50
   },
+  "review_state_file": "/Users/joseph/.codex/guardtower/reviews.json",
   "remediation_permission": {
     "enabled": true,
     "max_requests": 8,
