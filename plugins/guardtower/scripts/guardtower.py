@@ -29,6 +29,8 @@ NVD_CVES_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 X_RECENT_SEARCH_URL = "https://api.twitter.com/2/tweets/search/recent"
 DEFAULT_TIMEOUT_SECONDS = 25
 SOURCE_FAILURES: set[str] = set()
+REVIEW_SUPPRESSING_STATUSES = {"not_affected", "false_positive", "risk_accepted"}
+REVIEW_STATUSES = sorted(REVIEW_SUPPRESSING_STATUSES | {"affected"})
 
 
 ECOSYSTEM_ALIASES = {
@@ -872,6 +874,137 @@ def attach_exposure_fingerprints(payload: dict[str, Any]) -> None:
             exposure["fingerprint"] = exposure_fingerprint_dict(exposure)
 
 
+def review_state_path(config: dict[str, Any]) -> Path:
+    raw = (
+        config.get("review_state_file")
+        or (config.get("remediation_permission") or {}).get("review_state_file")
+        or "~/.codex/guardtower/reviews.json"
+    )
+    return Path(str(raw)).expanduser()
+
+
+def parse_iso_datetime(value: Any) -> dt.datetime | None:
+    if not value:
+        return None
+    text = str(value)
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def load_review_entries(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text())
+    if isinstance(payload, list):
+        entries = payload
+    elif isinstance(payload, dict):
+        entries = payload.get("reviews") or []
+    else:
+        entries = []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def acquire_file_lock(path: Path, timeout_seconds: float = 10.0) -> tuple[int, Path]:
+    lock_path = path.with_name(f"{path.name}.lock")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            return fd, lock_path
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for lock {lock_path}")
+            time.sleep(0.05)
+
+
+def release_file_lock(fd: int, lock_path: Path) -> None:
+    os.close(fd)
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
+    os.replace(tmp_path, path)
+
+
+def review_entry_is_current(entry: dict[str, Any], now: dt.datetime) -> bool:
+    expires_at = parse_iso_datetime(entry.get("expires_at"))
+    return expires_at is None or expires_at > now
+
+
+def load_review_decisions(config: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], Path]:
+    path = review_state_path(config)
+    try:
+        entries = load_review_entries(path)
+    except Exception as exc:  # noqa: BLE001 - report bad local review state without aborting the scan.
+        record_source_failure("review-state", f"warning: could not read review state {path}: {exc}")
+        return {}, path
+    now = utc_now()
+    decisions: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        fingerprint = str(entry.get("fingerprint") or "")
+        status = str(entry.get("status") or "")
+        if fingerprint and status in REVIEW_STATUSES and review_entry_is_current(entry, now):
+            decisions[fingerprint] = entry
+    return decisions, path
+
+
+def review_metadata(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: entry.get(key)
+        for key in ("status", "reason", "reviewed_at", "reviewed_by", "expires_at", "request_id")
+        if entry.get(key)
+    }
+
+
+def apply_review_state(config: dict[str, Any], payload: dict[str, Any]) -> None:
+    reviews, path = load_review_decisions(config)
+    raw_exposures = list(payload.get("exposures") or [])
+    active_exposures: list[dict[str, Any]] = []
+    reviewed_exposures: list[dict[str, Any]] = []
+    for exposure in raw_exposures:
+        if not isinstance(exposure, dict):
+            continue
+        fingerprint = exposure.get("fingerprint") or exposure_fingerprint_dict(exposure)
+        exposure["fingerprint"] = fingerprint
+        review = reviews.get(str(fingerprint))
+        if not review:
+            active_exposures.append(exposure)
+            continue
+        reviewed = dict(exposure)
+        reviewed["review"] = review_metadata(review)
+        if str(review.get("status")) in REVIEW_SUPPRESSING_STATUSES:
+            reviewed_exposures.append(reviewed)
+        else:
+            active_exposures.append(reviewed)
+
+    payload["all_exposures"] = raw_exposures
+    payload["exposures"] = active_exposures
+    payload["reviewed_exposures"] = reviewed_exposures
+    payload["review_state"] = {
+        "path": str(path),
+        "active_reviews": len(reviews),
+        "matched_reviews": len(reviewed_exposures),
+    }
+    summary = payload.setdefault("summary", {})
+    summary["raw_exposures"] = len(raw_exposures)
+    summary["reviewed_exposures"] = len(reviewed_exposures)
+    summary["exposures"] = len(active_exposures)
+
+
 def report_json_paths(report_dir: Path) -> list[Path]:
     return sorted(path for path in report_dir.glob("*.json") if path.is_file())
 
@@ -1149,6 +1282,7 @@ def build_remediation_clusters(config: dict[str, Any], payload: dict[str, Any]) 
                 "advisories": set(),
                 "sources": set(),
                 "kinds": set(),
+                "fingerprints": set(),
                 "exposure_count": 0,
                 "attribution_commands": set(),
             },
@@ -1172,6 +1306,7 @@ def build_remediation_clusters(config: dict[str, Any], payload: dict[str, Any]) 
         cluster["exposure_count"] += 1
         if dep:
             cluster["attribution_commands"].add(package_attribution_command(dep, directory))
+        cluster["fingerprints"].add(exposure.get("fingerprint") or exposure_fingerprint_dict(exposure))
 
     output = []
     for cluster in clusters.values():
@@ -1194,6 +1329,7 @@ def build_remediation_clusters(config: dict[str, Any], payload: dict[str, Any]) 
             "advisories": advisories,
             "sources": sorted(cluster["sources"]),
             "kinds": sorted(cluster["kinds"]),
+            "fingerprints": sorted(cluster["fingerprints"]),
             "attribution_commands": commands,
         }
         row["recommended_action"] = cluster_action_for(row)
@@ -1275,6 +1411,7 @@ def build_permission_requests(config: dict[str, Any], payload: dict[str, Any]) -
                 "advisories": cluster.get("advisories") or [],
                 "recommended_action": cluster.get("recommended_action"),
                 "attribution_commands": cluster.get("attribution_commands") or [],
+                "fingerprints": cluster.get("fingerprints") or [],
                 "approval_phrase": f"Approve {request_id}",
                 "question": question,
                 "scope": scope or "unmatched",
@@ -1505,7 +1642,9 @@ def markdown_report(payload: dict[str, Any]) -> str:
         f"- Dependencies inventoried: {payload['summary']['dependencies']}",
         f"- Projects with manifests: {payload['summary']['projects']}",
         f"- Threat intelligence items: {payload['summary']['threat_items']}",
-        f"- Exposures: {payload['summary']['exposures']}",
+        f"- Active exposures: {payload['summary']['exposures']}",
+        f"- Reviewed exposures: {payload['summary'].get('reviewed_exposures', 0)}",
+        f"- Raw exposures before review state: {payload['summary'].get('raw_exposures', payload['summary']['exposures'])}",
         f"- New since previous report: {payload['summary'].get('new_exposures', 0)}",
         f"- Resolved since previous report: {payload['summary'].get('resolved_exposures', 0)}",
         f"- Still present: {payload['summary'].get('persisting_exposures', 0)}",
@@ -1539,6 +1678,34 @@ def markdown_report(payload: dict[str, Any]) -> str:
         lines.append("## Deployment Discovery Failures")
         for source in payload["deployment_source_failures"]:
             lines.append(f"- {source}")
+        lines.append("")
+    if payload.get("reviewed_exposures"):
+        lines.append("## Reviewed Findings")
+        lines.append("These findings matched current review state and are excluded from remediation and permission requests.")
+        lines.append("")
+        lines.append("| Status | Vulnerability | Project/Directory | Package | Reason | Fingerprint |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
+        for exposure in payload["reviewed_exposures"][: payload["max_report_items"]]:
+            dep = exposure.get("dependency") or {}
+            review = exposure.get("review") or {}
+            package = package_label(dep) if dep else "unmatched intel"
+            lines.append(
+                "| "
+                + " | ".join(
+                    markdown_table_cell(value)
+                    for value in (
+                        review.get("status"),
+                        vulnerability_label_for(exposure),
+                        project_directory_for(exposure),
+                        package,
+                        review.get("reason"),
+                        exposure.get("fingerprint"),
+                    )
+                )
+                + " |"
+            )
+        if len(payload["reviewed_exposures"]) > payload["max_report_items"]:
+            lines.append(f"- ... {len(payload['reviewed_exposures']) - payload['max_report_items']} more reviewed findings in the JSON report.")
         lines.append("")
     if payload.get("deployment_inventory"):
         lines.append("## Deployment Inventory")
@@ -1693,6 +1860,8 @@ def write_reports(config: dict[str, Any], payload: dict[str, Any]) -> tuple[Path
     normalized = normalize_payload(payload)
     payload.clear()
     payload.update(normalized)
+    attach_exposure_fingerprints(payload)
+    apply_review_state(config, payload)
     add_delta_to_payload(payload, report_dir, current_json_path=json_path)
     payload["action_view"] = build_action_view(config, payload)
     payload["remediation_clusters"] = build_remediation_clusters(config, payload)
@@ -1701,6 +1870,140 @@ def write_reports(config: dict[str, Any], payload: dict[str, Any]) -> tuple[Path
     loaded = json.loads(json_path.read_text())
     md_path.write_text(markdown_report(loaded))
     return json_path, md_path
+
+
+def report_exposures_for_review(report: dict[str, Any]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    output: list[dict[str, Any]] = []
+    for key in ("all_exposures", "exposures", "reviewed_exposures"):
+        for exposure in report.get(key) or []:
+            if not isinstance(exposure, dict):
+                continue
+            fingerprint = exposure.get("fingerprint") or exposure_fingerprint_dict(exposure)
+            if fingerprint in seen:
+                continue
+            seen.add(str(fingerprint))
+            exposure = dict(exposure)
+            exposure["fingerprint"] = fingerprint
+            output.append(exposure)
+    return output
+
+
+def advisory_set(value: Any) -> set[str]:
+    if not value:
+        return set()
+    if isinstance(value, str):
+        values = value.split(",")
+    else:
+        values = value
+    return {str(item).strip() for item in values if str(item).strip()}
+
+
+def exposure_matches_permission_request(exposure: dict[str, Any], request: dict[str, Any]) -> bool:
+    dep = exposure.get("dependency") or {}
+    if dep and request.get("package") and package_label(dep) != request.get("package"):
+        return False
+    directories = set(request.get("affected_directories") or [])
+    if directories and project_directory_for(exposure) not in directories:
+        return False
+    requested_advisories = advisory_set(request.get("advisories"))
+    if requested_advisories and not (requested_advisories & advisory_set(exposure.get("advisory_id"))):
+        return False
+    return True
+
+
+def review_fingerprints_from_report(
+    report: dict[str, Any],
+    *,
+    request_id: str | None,
+    explicit_fingerprints: list[str] | None,
+) -> tuple[list[str], str | None]:
+    if explicit_fingerprints:
+        return sorted(set(explicit_fingerprints)), request_id
+    if not request_id:
+        raise ValueError("provide --request-id or at least one --fingerprint")
+    request = next((item for item in report.get("permission_requests") or [] if item.get("id") == request_id), None)
+    if not request:
+        raise ValueError(f"request id not found in report: {request_id}")
+    fingerprints = [str(item) for item in request.get("fingerprints") or [] if item]
+    if fingerprints:
+        return sorted(set(fingerprints)), request_id
+    exposures = report_exposures_for_review(report)
+    matched = [
+        str(exposure["fingerprint"])
+        for exposure in exposures
+        if exposure_matches_permission_request(exposure, request)
+    ]
+    if not matched:
+        raise ValueError(f"no exposures matched request id: {request_id}")
+    return sorted(set(matched)), request_id
+
+
+def review_snapshot(exposure: dict[str, Any] | None) -> dict[str, Any]:
+    if not exposure:
+        return {}
+    dep = exposure.get("dependency") or {}
+    return {
+        "kind": exposure.get("kind"),
+        "project": exposure.get("project"),
+        "package": package_label(dep) if dep else None,
+        "manifest": dep.get("manifest") if dep else None,
+        "advisory_id": exposure.get("advisory_id"),
+        "title": exposure.get("title"),
+        "url": exposure.get("url"),
+    }
+
+
+def record_review_decision(
+    config: dict[str, Any],
+    report_path: Path,
+    *,
+    request_id: str | None,
+    explicit_fingerprints: list[str] | None,
+    status: str,
+    reason: str,
+    reviewed_by: str,
+    expires_at: str | None,
+) -> tuple[Path, int]:
+    report = json.loads(report_path.read_text())
+    fingerprints, resolved_request_id = review_fingerprints_from_report(
+        report,
+        request_id=request_id,
+        explicit_fingerprints=explicit_fingerprints,
+    )
+    path = review_state_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd, lock_path = acquire_file_lock(path)
+    try:
+        existing_entries = load_review_entries(path)
+        by_fingerprint = {
+            str(entry.get("fingerprint")): entry
+            for entry in existing_entries
+            if entry.get("fingerprint")
+        }
+        exposures = {str(item["fingerprint"]): item for item in report_exposures_for_review(report)}
+        reviewed_at = iso_date(utc_now())
+        for fingerprint in fingerprints:
+            by_fingerprint[fingerprint] = {
+                "fingerprint": fingerprint,
+                "status": status,
+                "reason": reason,
+                "reviewed_at": reviewed_at,
+                "reviewed_by": reviewed_by,
+                "expires_at": expires_at,
+                "request_id": resolved_request_id,
+                "source_report": str(report_path),
+                "exposure": review_snapshot(exposures.get(fingerprint)),
+            }
+        payload = {
+            "version": 1,
+            "updated_at": reviewed_at,
+            "reviews": sorted(by_fingerprint.values(), key=lambda entry: str(entry.get("fingerprint") or "")),
+        }
+        write_json_atomic(path, payload)
+    finally:
+        release_file_lock(lock_fd, lock_path)
+    return path, len(fingerprints)
 
 
 def build_report(config: dict[str, Any], no_network: bool) -> tuple[dict[str, Any], list[Exposure]]:
@@ -1755,11 +2058,33 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--no-network", action="store_true", help="Skip OSV, CISA, NVD, RSS, and X calls.")
+    parser.add_argument("--record-review", type=Path, help="Record a review decision from an existing report JSON and exit.")
+    parser.add_argument("--request-id", help="Permission request id to mark reviewed.")
+    parser.add_argument("--fingerprint", action="append", help="Exposure fingerprint to mark reviewed. Can be repeated.")
+    parser.add_argument("--review-status", choices=REVIEW_STATUSES, default="not_affected")
+    parser.add_argument("--reason", help="Human-readable reason for the review decision.")
+    parser.add_argument("--reviewed-by", default="codex")
+    parser.add_argument("--expires-at", help="Optional ISO timestamp after which this review decision no longer applies.")
     args = parser.parse_args()
 
     config = load_config(args.config)
     if config.get("env_file"):
         load_env_file(Path(config["env_file"]).expanduser())
+    if args.record_review:
+        if not args.reason:
+            parser.error("--reason is required with --record-review")
+        path, count = record_review_decision(
+            config,
+            args.record_review,
+            request_id=args.request_id,
+            explicit_fingerprints=args.fingerprint,
+            status=args.review_status,
+            reason=args.reason,
+            reviewed_by=args.reviewed_by,
+            expires_at=args.expires_at,
+        )
+        print(f"Recorded {count} review decision(s) in {path}")
+        return 0
     payload, exposures = build_report(config, args.no_network)
     json_path, md_path = write_reports(config, payload)
     print(f"Wrote JSON report: {json_path}")
@@ -1774,13 +2099,17 @@ def main() -> int:
             f"{delta.get('persisting', 0)} still present, "
             f"{delta.get('not_observed_due_to_source_failure', 0)} not observed due to source failure"
         )
-    direct = [item for item in exposures if item.kind in {"direct-package", "watched-surface-package"}]
+    direct = [
+        item
+        for item in payload.get("exposures", [])
+        if item.get("kind") in {"direct-package", "watched-surface-package"}
+    ]
     if direct:
         print("Direct/package-linked exposures:")
         for exposure in direct[:20]:
-            dep = exposure.dependency
-            package = f"{dep.ecosystem}:{dep.name}@{dep.version or 'unknown'}" if dep else ""
-            print(f"- {exposure.severity} {exposure.project or '-'} {package}: {exposure.title}")
+            dep = exposure.get("dependency") or {}
+            package = f"{dep.get('ecosystem')}:{dep.get('name')}@{dep.get('version') or 'unknown'}" if dep else ""
+            print(f"- {exposure.get('severity')} {exposure.get('project') or '-'} {package}: {exposure.get('title')}")
     if (config.get("alert") or {}).get("exit_nonzero_on_direct_match") and direct:
         return 2
     return 0
