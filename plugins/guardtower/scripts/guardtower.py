@@ -849,15 +849,18 @@ def unique_exposures(exposures: list[Exposure]) -> list[Exposure]:
 
 def exposure_fingerprint_dict(exposure: dict[str, Any]) -> str:
     dep = exposure.get("dependency") or {}
+    stable_advisory = exposure.get("advisory_id")
+    stable_url = exposure.get("url")
     identity = {
         "kind": exposure.get("kind"),
+        "source": exposure.get("source"),
         "project": exposure.get("project"),
         "ecosystem": dep.get("ecosystem"),
         "name": dep.get("name"),
         "version": dep.get("version"),
-        "advisory_id": exposure.get("advisory_id"),
-        "url": exposure.get("url"),
-        "title": exposure.get("title"),
+        "advisory_id": stable_advisory,
+        "url": stable_url,
+        "title": None if stable_advisory or stable_url else exposure.get("title"),
     }
     stable = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
@@ -1346,7 +1349,7 @@ def build_deployment_inventory(config: dict[str, Any], no_network: bool) -> tupl
 def compute_delta(current: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
     current_exposures = current.get("exposures", [])
     for exposure in current_exposures:
-        if isinstance(exposure, dict) and not exposure.get("fingerprint"):
+        if isinstance(exposure, dict):
             exposure["fingerprint"] = exposure_fingerprint_dict(exposure)
     if not previous:
         return {
@@ -1363,7 +1366,7 @@ def compute_delta(current: dict[str, Any], previous: dict[str, Any] | None) -> d
 
     previous_exposures = previous.get("exposures", [])
     for exposure in previous_exposures:
-        if isinstance(exposure, dict) and not exposure.get("fingerprint"):
+        if isinstance(exposure, dict):
             exposure["fingerprint"] = exposure_fingerprint_dict(exposure)
     previous_by_id = {
         exposure["fingerprint"]: exposure

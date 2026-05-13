@@ -65,5 +65,64 @@ class ReportFormattingTests(unittest.TestCase):
         self.assertEqual(guardtower.text_excerpt(text), text)
 
 
+class ExposureFingerprintTests(unittest.TestCase):
+    def test_fingerprint_ignores_title_when_advisory_is_present(self) -> None:
+        base = {
+            "kind": "watched-surface-package",
+            "source": "nvd-recent",
+            "project": "web",
+            "dependency": {"ecosystem": "npm", "name": "next", "version": "15.5.18"},
+            "advisory_id": "CVE-2026-44572",
+            "url": "https://github.com/vercel/next.js/security/advisories/GHSA-3g8h-86w9-wvmq",
+            "title": "short title",
+        }
+        updated = dict(base, title="longer word-aware title with more context")
+
+        self.assertEqual(
+            guardtower.exposure_fingerprint_dict(base),
+            guardtower.exposure_fingerprint_dict(updated),
+        )
+
+    def test_fingerprint_uses_title_as_fallback_without_stable_ids(self) -> None:
+        base = {
+            "kind": "watched-surface-mention",
+            "source": "rss:example.test",
+            "project": None,
+            "dependency": None,
+            "advisory_id": None,
+            "url": None,
+            "title": "one item",
+        }
+        updated = dict(base, title="another item")
+
+        self.assertNotEqual(
+            guardtower.exposure_fingerprint_dict(base),
+            guardtower.exposure_fingerprint_dict(updated),
+        )
+
+    def test_delta_recomputes_stale_fingerprints(self) -> None:
+        previous_exposure = {
+            "kind": "watched-surface-package",
+            "source": "nvd-recent",
+            "project": "web",
+            "dependency": {"ecosystem": "npm", "name": "next", "version": "15.5.18"},
+            "advisory_id": "CVE-2026-44572",
+            "url": "https://github.com/vercel/next.js/security/advisories/GHSA-3g8h-86w9-wvmq",
+            "title": "short title",
+            "fingerprint": "stale-title-derived-hash",
+        }
+        current_exposure = dict(previous_exposure, title="longer word-aware title")
+        current_exposure.pop("fingerprint")
+
+        delta = guardtower.compute_delta(
+            {"exposures": [current_exposure], "source_failures": []},
+            {"generated_at": "previous", "exposures": [previous_exposure], "source_failures": []},
+        )
+
+        self.assertEqual(delta["new"], 0)
+        self.assertEqual(delta["resolved"], 0)
+        self.assertEqual(delta["persisting"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
