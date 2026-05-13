@@ -198,5 +198,17 @@
   "alert": {
     "exit_nonzero_on_direct_match": false,
     "max_report_items": 50
+  },
+  "remediation_permission": {
+    "enabled": true,
+    "max_requests": 8,
+    "fix_urgencies": [
+      "critical",
+      "high"
+    ],
+    "review_urgencies": [
+      "critical"
+    ],
+    "include_review_requests": true
   }
 }

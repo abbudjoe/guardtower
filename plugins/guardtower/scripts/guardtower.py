@@ -1210,6 +1210,81 @@ def build_remediation_clusters(config: dict[str, Any], payload: dict[str, Any]) 
     )
 
 
+def permission_request_id(prefix: str, cluster: dict[str, Any]) -> str:
+    identity = {
+        "prefix": prefix,
+        "package": cluster.get("package"),
+        "advisories": cluster.get("advisories") or [],
+        "affected_directories": cluster.get("affected_directories") or [],
+    }
+    stable = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return f"{prefix}-{hashlib.sha256(stable.encode('utf-8')).hexdigest()[:10]}"
+
+
+def build_permission_requests(config: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    permission_config = config.get("remediation_permission") or {}
+    if not permission_config.get("enabled", True):
+        return []
+    max_requests = int(permission_config.get("max_requests", 8))
+    fix_urgencies = set(permission_config.get("fix_urgencies") or ["critical", "high"])
+    review_urgencies = set(permission_config.get("review_urgencies") or ["critical"])
+    include_review_requests = bool(permission_config.get("include_review_requests", True))
+    requests: list[dict[str, Any]] = []
+    for cluster in payload.get("remediation_clusters") or []:
+        kinds = set(cluster.get("kinds") or [])
+        urgency = str(cluster.get("urgency") or "")
+        request_type = None
+        prefix = None
+        if "direct-package" in kinds and urgency in fix_urgencies:
+            request_type = "fix"
+            prefix = "GT-FIX"
+        elif include_review_requests and "watched-surface-package" in kinds and urgency in review_urgencies:
+            request_type = "review"
+            prefix = "GT-REVIEW"
+        if not request_type or not prefix:
+            continue
+        request_id = permission_request_id(prefix, cluster)
+        package = str(cluster.get("package") or "unmatched intel")
+        directories = cluster.get("affected_directories") or []
+        scope = ", ".join(directories[:3])
+        if len(directories) > 3:
+            scope += f", and {len(directories) - 3} more"
+        if request_type == "fix":
+            question = (
+                f"Approve {request_id} to let Codex remediate {package} in the affected repo(s), "
+                "run attribution commands and tests/builds, then prepare commits or PRs. "
+                "Do not deploy, mutate paid cloud jobs, or merge without separate approval."
+            )
+        else:
+            question = (
+                f"Approve {request_id} to let Codex verify whether the watched-surface intel applies to {package}, "
+                "check installed versions and affected ranges, and only propose a patch if exposure is confirmed. "
+                "Do not deploy, mutate paid cloud jobs, or merge without separate approval."
+            )
+        requests.append(
+            {
+                "id": request_id,
+                "type": request_type,
+                "urgency": urgency,
+                "package": package,
+                "exposure_count": cluster.get("exposure_count"),
+                "affected_directory_count": cluster.get("affected_directory_count"),
+                "affected_directories": directories,
+                "deployment_statuses": cluster.get("deployment_statuses") or [],
+                "severity": cluster.get("severity"),
+                "advisories": cluster.get("advisories") or [],
+                "recommended_action": cluster.get("recommended_action"),
+                "attribution_commands": cluster.get("attribution_commands") or [],
+                "approval_phrase": f"Approve {request_id}",
+                "question": question,
+                "scope": scope or "unmatched",
+            }
+        )
+        if len(requests) >= max_requests:
+            break
+    return requests
+
+
 def vercel_scope_params(vercel_config: dict[str, Any]) -> dict[str, str]:
     params = {}
     team_id_env = vercel_config.get("team_id_env", "VERCEL_TEAM_ID")
@@ -1511,6 +1586,29 @@ def markdown_report(payload: dict[str, Any]) -> str:
         if len(payload["remediation_clusters"]) > payload["max_report_items"]:
             lines.append(f"- ... {len(payload['remediation_clusters']) - payload['max_report_items']} more remediation clusters in the JSON report.")
         lines.append("")
+    if payload.get("permission_requests"):
+        lines.append("## Permission Requests")
+        lines.append("Guardtower did not run these actions. Reply with an approval phrase to let Codex start one bounded remediation task.")
+        lines.append("")
+        lines.append("| ID | Type | Urgency | Package | Scope | Permission Prompt |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
+        for row in payload["permission_requests"][: payload["max_report_items"]]:
+            lines.append(
+                "| "
+                + " | ".join(
+                    markdown_table_cell(value)
+                    for value in (
+                        row.get("id"),
+                        row.get("type"),
+                        row.get("urgency"),
+                        row.get("package"),
+                        row.get("scope"),
+                        row.get("question"),
+                    )
+                )
+                + " |"
+            )
+        lines.append("")
     if payload.get("action_view"):
         lines.append("## Action View")
         lines.append("| Urgency | Vulnerability | Project/Directory | Deployment Status | Severity | Recommended Action |")
@@ -1598,6 +1696,7 @@ def write_reports(config: dict[str, Any], payload: dict[str, Any]) -> tuple[Path
     add_delta_to_payload(payload, report_dir, current_json_path=json_path)
     payload["action_view"] = build_action_view(config, payload)
     payload["remediation_clusters"] = build_remediation_clusters(config, payload)
+    payload["permission_requests"] = build_permission_requests(config, payload)
     json_path.write_text(json.dumps(payload, indent=2) + "\n")
     loaded = json.loads(json_path.read_text())
     md_path.write_text(markdown_report(loaded))

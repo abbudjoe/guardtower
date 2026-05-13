@@ -9,6 +9,7 @@ It inventories dependency manifests, checks exact package/version exposure throu
 - new, resolved, still-present, and source-failure-aware exposure deltas
 - deployment inventory and Vercel production verification when configured
 - a clustered Remediation Plan that groups many advisories into package-level work items
+- permission requests that ask before Codex starts bounded remediation work
 - an Action View for triage
 - strict threat-intel filtering so generic AI/tech roundups do not become security findings
 
@@ -51,6 +52,8 @@ urgency | vulnerability | project/directory | deployment status | severity | rec
 The `severity` column is a triage class: `deployed`, `active repo`, `lockfile-only`, `dev dependency`, or `unmatched intel`.
 
 The Remediation Plan groups findings by package/version or unmatched intelligence item, ranks the clusters by urgency and deployment status, and includes package-manager attribution commands such as `npm explain`, `cargo tree -i`, or `pipdeptree -r -p`.
+
+The Permission Requests section is the approval hook. Guardtower never patches by itself; it emits approval IDs such as `GT-FIX-...` for direct package findings and `GT-REVIEW-...` for watched-surface intel that needs applicability review first. Reply with the approval phrase in Codex to start one bounded task. The default prompt explicitly excludes deploys, paid cloud/job mutations, and merges unless separately approved.
 
 ## Deployment Discovery
 
