@@ -164,7 +164,7 @@ def clean_version(raw: str | None) -> str | None:
     value = raw.strip().strip("\"'`")
     if not value or value == "*":
         return None
-    match = re.search(r"(?:==|=)\s*([A-Za-z0-9_.!+\-]+)", value)
+    match = re.search(r"(?<![<>=!~])(?:==|=)\s*([A-Za-z0-9_.!+\-]+)", value)
     if match:
         return match.group(1)
     if re.fullmatch(r"[0-9][A-Za-z0-9_.!+\-]*", value):

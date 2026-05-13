@@ -36,5 +36,15 @@ class SurfaceNameMatchingTests(unittest.TestCase):
         self.assertTrue(guardtower.surface_name_matches("Next.js", "Next.js cache poisoning exploit disclosed."))
 
 
+class DependencyVersionParsingTests(unittest.TestCase):
+    def test_lower_bounds_are_not_exact_installed_versions(self) -> None:
+        self.assertIsNone(guardtower.clean_version("pillow>=10.4.0"))
+        self.assertIsNone(guardtower.clean_version("python-multipart>=0.0.9"))
+
+    def test_exact_versions_are_preserved(self) -> None:
+        self.assertEqual(guardtower.clean_version("pillow==10.4.0"), "10.4.0")
+        self.assertEqual(guardtower.clean_version("10.4.0"), "10.4.0")
+
+
 if __name__ == "__main__":
     unittest.main()
