@@ -24,6 +24,7 @@ python3 /Users/joseph/guard/plugins/guardtower/scripts/guardtower.py --config /U
 ## Operating Contract
 
 - Treat `config.json` as the explicit contract for scan roots, watched surfaces, and intelligence sources.
+- Load credentials through the configured `env_file` before judging source availability. The default config points at `/Users/joseph/guard/.env`; do not conclude `X_BEARER_TOKEN` or `VERCEL_TOKEN` is missing only because it is absent from the worker shell.
 - Add new package/product aliases to `watched_surfaces`; do not bury important matching behavior in prose.
 - X search is optional and requires `X_BEARER_TOKEN`.
 - Reports live under `/Users/joseph/.codex/guardtower/reports`.

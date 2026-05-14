@@ -870,7 +870,30 @@ def build_osv_exposures(dependencies: list[Dependency], osv_results: dict[tuple[
     return exposures
 
 
-def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency], threat_items: list[ThreatItem]) -> list[Exposure]:
+def vuln_advisory_ids(vuln: dict[str, Any]) -> set[str]:
+    ids = {str(vuln.get("id") or "")}
+    ids.update(str(alias) for alias in vuln.get("aliases") or [])
+    return {advisory_id for advisory_id in ids if advisory_id}
+
+
+def osv_confirms_dependency_advisory(
+    dep: Dependency,
+    item: ThreatItem,
+    osv_results: dict[tuple[str, str, str | None], list[dict[str, Any]]] | None,
+) -> bool:
+    if not item.cves or not dep.version or not osv_results:
+        return False
+    item_ids = set(item.cves)
+    key = (dep.ecosystem, dep.name, dep.version)
+    return any(item_ids & vuln_advisory_ids(vuln) for vuln in osv_results.get(key, []))
+
+
+def build_threat_exposures(
+    config: dict[str, Any],
+    dependencies: list[Dependency],
+    threat_items: list[ThreatItem],
+    osv_results: dict[tuple[str, str, str | None], list[dict[str, Any]]] | None = None,
+) -> list[Exposure]:
     package_index: dict[tuple[str, str], list[Dependency]] = {}
     for dep in dependencies:
         package_index.setdefault((dep.ecosystem.lower(), dep.name.lower()), []).append(dep)
@@ -884,9 +907,22 @@ def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency
                 key = (str(package.get("ecosystem", "")).lower(), str(package.get("name", "")).lower())
                 direct_matches.extend(package_index.get(key, []))
             if direct_matches:
+                matched = False
+                skipped_unconfirmed_version = False
+                has_affected_range = bool(extracted_affected_ranges(text))
                 for dep in direct_matches:
-                    if not version_is_in_affected_range(dep.version, text):
+                    if has_affected_range and not version_is_in_affected_range(dep.version, text):
                         continue
+                    if (
+                        not has_affected_range
+                        and item.cves
+                        and dep.version
+                        and osv_results is not None
+                        and not osv_confirms_dependency_advisory(dep, item, osv_results)
+                    ):
+                        skipped_unconfirmed_version = True
+                        continue
+                    matched = True
                     exposures.append(
                         Exposure(
                             kind="watched-surface-package",
@@ -898,6 +934,23 @@ def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency
                             advisory_id=", ".join(item.cves) if item.cves else None,
                             url=item.url,
                             evidence=f"{item.source} mentions watched surface {surface.get('id')} and project uses {dep.ecosystem}:{dep.name}",
+                        )
+                    )
+                if skipped_unconfirmed_version and not matched:
+                    exposures.append(
+                        Exposure(
+                            kind="watched-surface-mention",
+                            severity="info",
+                            source=item.source,
+                            project=None,
+                            dependency=None,
+                            title=item.title,
+                            advisory_id=", ".join(item.cves) if item.cves else None,
+                            url=item.url,
+                            evidence=(
+                                f"{item.source} mentions watched surface {surface.get('id')}; "
+                                "local package versions were not confirmed affected by OSV"
+                            ),
                         )
                     )
             else:
@@ -2108,7 +2161,7 @@ def build_report(config: dict[str, Any], no_network: bool) -> tuple[dict[str, An
     threat_items.extend(fetch_x_recent(config, no_network))
     exposures = unique_exposures(
         build_osv_exposures(dependencies, osv_results)
-        + build_threat_exposures(config, dependencies, threat_items)
+        + build_threat_exposures(config, dependencies, threat_items, osv_results)
     )
     deployment_inventory, deployment_failures = build_deployment_inventory(config, no_network)
     projects = sorted({dep.project for dep in dependencies})

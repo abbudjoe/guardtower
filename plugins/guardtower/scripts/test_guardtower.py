@@ -112,6 +112,81 @@ class DependencyVersionParsingTests(unittest.TestCase):
         self.assertEqual(len(exposures), 1)
         self.assertEqual(exposures[0].dependency.version, "15.5.15")
 
+    def test_watched_surface_cve_without_range_requires_osv_confirmation(self) -> None:
+        config = {
+            "watched_surfaces": [
+                {
+                    "id": "nextjs",
+                    "names": ["Next.js"],
+                    "packages": [{"ecosystem": "npm", "name": "next"}],
+                }
+            ]
+        }
+        dep = guardtower.Dependency(
+            ecosystem="npm",
+            name="next",
+            version="15.5.18",
+            project="web",
+            manifest="/workspace/web/package.json",
+            source="dependencies",
+        )
+        item = guardtower.ThreatItem(
+            source="x-recent",
+            title="CVE-2026-44578 Next.js WebSocket Upgrade SSRF",
+            url="https://example.test",
+            published=None,
+            cves=("CVE-2026-44578",),
+            text="Next.js WebSocket Upgrade SSRF exploit discussion without fixed-version range.",
+        )
+
+        exposures = guardtower.build_threat_exposures(config, [dep], [item], {})
+
+        self.assertEqual(len(exposures), 1)
+        self.assertEqual(exposures[0].kind, "watched-surface-mention")
+        self.assertIsNone(exposures[0].dependency)
+
+    def test_watched_surface_cve_without_range_uses_osv_confirmation(self) -> None:
+        config = {
+            "watched_surfaces": [
+                {
+                    "id": "nextjs",
+                    "names": ["Next.js"],
+                    "packages": [{"ecosystem": "npm", "name": "next"}],
+                }
+            ]
+        }
+        dep = guardtower.Dependency(
+            ecosystem="npm",
+            name="next",
+            version="15.5.15",
+            project="web",
+            manifest="/workspace/web/package.json",
+            source="dependencies",
+        )
+        item = guardtower.ThreatItem(
+            source="x-recent",
+            title="CVE-2026-44578 Next.js WebSocket Upgrade SSRF",
+            url="https://example.test",
+            published=None,
+            cves=("CVE-2026-44578",),
+            text="Next.js WebSocket Upgrade SSRF exploit discussion without fixed-version range.",
+        )
+        osv_results = {
+            ("npm", "next", "15.5.15"): [
+                {
+                    "id": "GHSA-c4j6-fc7j-m34r",
+                    "aliases": ["CVE-2026-44578"],
+                    "summary": "Next.js vulnerable to SSRF",
+                }
+            ]
+        }
+
+        exposures = guardtower.build_threat_exposures(config, [dep], [item], osv_results)
+
+        self.assertEqual(len(exposures), 1)
+        self.assertEqual(exposures[0].kind, "watched-surface-package")
+        self.assertEqual(exposures[0].dependency.version, "15.5.15")
+
 
 class ReportFormattingTests(unittest.TestCase):
     def test_excerpts_do_not_cut_words_mid_token(self) -> None:
