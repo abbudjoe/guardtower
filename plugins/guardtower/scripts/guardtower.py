@@ -760,7 +760,87 @@ def surface_name_matches(name: str, text: str) -> bool:
     escaped = re.escape(needle)
     prefix = r"(?<![A-Za-z0-9_@./-])" if needle[0].isalnum() else ""
     suffix = r"(?![A-Za-z0-9_@./-])" if needle[-1].isalnum() else ""
-    return re.search(f"{prefix}{escaped}{suffix}", text, re.IGNORECASE) is not None
+    pattern = re.compile(f"{prefix}{escaped}{suffix}", re.IGNORECASE)
+    for match in pattern.finditer(text):
+        following = text[match.end() : match.end() + 40]
+        if needle.lower() == "react" and re.match(
+            r"\s+(?:framework|server\s+components?)\b",
+            following,
+            re.IGNORECASE,
+        ):
+            continue
+        return True
+    return False
+
+
+def parse_version_tuple(value: str | None) -> tuple[int, ...] | None:
+    if not value:
+        return None
+    match = re.match(r"v?(\d+(?:\.\d+){0,3})", value.strip(), flags=re.IGNORECASE)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def compare_versions(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    width = max(len(left), len(right))
+    padded_left = left + (0,) * (width - len(left))
+    padded_right = right + (0,) * (width - len(right))
+    if padded_left < padded_right:
+        return -1
+    if padded_left > padded_right:
+        return 1
+    return 0
+
+
+def extracted_affected_ranges(text: str) -> list[tuple[tuple[int, ...] | None, list[tuple[int, ...]]]]:
+    ranges: list[tuple[tuple[int, ...] | None, list[tuple[int, ...]]]] = []
+    version = r"v?\d+(?:\.\d+){0,3}"
+    patterns = (
+        re.compile(
+            rf"\b[Ff]rom\s+({version})\s+to\s+before\s+({version})(?:\s+and\s+({version}))?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"\b[Bb]efore\s+({version})(?:\s+and\s+({version}))?",
+            re.IGNORECASE,
+        ),
+    )
+    for match in patterns[0].finditer(text):
+        lower = parse_version_tuple(match.group(1))
+        fixed = [parsed for raw in match.groups()[1:] if (parsed := parse_version_tuple(raw))]
+        if fixed:
+            ranges.append((lower, fixed))
+    for match in patterns[1].finditer(text):
+        fixed = [parsed for raw in match.groups() if (parsed := parse_version_tuple(raw))]
+        if fixed:
+            ranges.append((None, fixed))
+    return ranges
+
+
+def version_is_in_affected_range(version: str | None, text: str) -> bool:
+    installed = parse_version_tuple(version)
+    if not installed:
+        return True
+    ranges = extracted_affected_ranges(text)
+    if not ranges:
+        return True
+    installed_major = installed[0]
+    for lower, fixed_versions in ranges:
+        if lower and compare_versions(installed, lower) < 0:
+            continue
+        same_major_fixed = sorted(fixed for fixed in fixed_versions if fixed[0] == installed_major)
+        if same_major_fixed:
+            if compare_versions(installed, same_major_fixed[0]) < 0:
+                return True
+            continue
+        fixed_majors = [fixed[0] for fixed in fixed_versions]
+        if installed_major < min(fixed_majors):
+            return True
+        if installed_major > max(fixed_majors):
+            continue
+        return True
+    return False
 
 
 def build_osv_exposures(dependencies: list[Dependency], osv_results: dict[tuple[str, str, str | None], list[dict[str, Any]]]) -> list[Exposure]:
@@ -790,7 +870,30 @@ def build_osv_exposures(dependencies: list[Dependency], osv_results: dict[tuple[
     return exposures
 
 
-def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency], threat_items: list[ThreatItem]) -> list[Exposure]:
+def vuln_advisory_ids(vuln: dict[str, Any]) -> set[str]:
+    ids = {str(vuln.get("id") or "")}
+    ids.update(str(alias) for alias in vuln.get("aliases") or [])
+    return {advisory_id for advisory_id in ids if advisory_id}
+
+
+def osv_confirms_dependency_advisory(
+    dep: Dependency,
+    item: ThreatItem,
+    osv_results: dict[tuple[str, str, str | None], list[dict[str, Any]]] | None,
+) -> bool:
+    if not item.cves or not dep.version or not osv_results:
+        return False
+    item_ids = set(item.cves)
+    key = (dep.ecosystem, dep.name, dep.version)
+    return any(item_ids & vuln_advisory_ids(vuln) for vuln in osv_results.get(key, []))
+
+
+def build_threat_exposures(
+    config: dict[str, Any],
+    dependencies: list[Dependency],
+    threat_items: list[ThreatItem],
+    osv_results: dict[tuple[str, str, str | None], list[dict[str, Any]]] | None = None,
+) -> list[Exposure]:
     package_index: dict[tuple[str, str], list[Dependency]] = {}
     for dep in dependencies:
         package_index.setdefault((dep.ecosystem.lower(), dep.name.lower()), []).append(dep)
@@ -804,7 +907,22 @@ def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency
                 key = (str(package.get("ecosystem", "")).lower(), str(package.get("name", "")).lower())
                 direct_matches.extend(package_index.get(key, []))
             if direct_matches:
+                matched = False
+                skipped_unconfirmed_version = False
+                has_affected_range = bool(extracted_affected_ranges(text))
                 for dep in direct_matches:
+                    if has_affected_range and not version_is_in_affected_range(dep.version, text):
+                        continue
+                    if (
+                        not has_affected_range
+                        and item.cves
+                        and dep.version
+                        and osv_results is not None
+                        and not osv_confirms_dependency_advisory(dep, item, osv_results)
+                    ):
+                        skipped_unconfirmed_version = True
+                        continue
+                    matched = True
                     exposures.append(
                         Exposure(
                             kind="watched-surface-package",
@@ -816,6 +934,23 @@ def build_threat_exposures(config: dict[str, Any], dependencies: list[Dependency
                             advisory_id=", ".join(item.cves) if item.cves else None,
                             url=item.url,
                             evidence=f"{item.source} mentions watched surface {surface.get('id')} and project uses {dep.ecosystem}:{dep.name}",
+                        )
+                    )
+                if skipped_unconfirmed_version and not matched:
+                    exposures.append(
+                        Exposure(
+                            kind="watched-surface-mention",
+                            severity="info",
+                            source=item.source,
+                            project=None,
+                            dependency=None,
+                            title=item.title,
+                            advisory_id=", ".join(item.cves) if item.cves else None,
+                            url=item.url,
+                            evidence=(
+                                f"{item.source} mentions watched surface {surface.get('id')}; "
+                                "local package versions were not confirmed affected by OSV"
+                            ),
                         )
                     )
             else:
@@ -2026,7 +2161,7 @@ def build_report(config: dict[str, Any], no_network: bool) -> tuple[dict[str, An
     threat_items.extend(fetch_x_recent(config, no_network))
     exposures = unique_exposures(
         build_osv_exposures(dependencies, osv_results)
-        + build_threat_exposures(config, dependencies, threat_items)
+        + build_threat_exposures(config, dependencies, threat_items, osv_results)
     )
     deployment_inventory, deployment_failures = build_deployment_inventory(config, no_network)
     projects = sorted({dep.project for dep in dependencies})

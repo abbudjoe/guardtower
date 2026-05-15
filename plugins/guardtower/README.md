@@ -10,6 +10,13 @@ It does three things in one deterministic pass:
 
 Threat-intel matching is intentionally strict: generic AI/tech news roundups, newsletters, and meta-discussion replies are filtered out unless the item is centered on a concrete security exploit, CVE, compromised package, or actively exploited vulnerability.
 
+## Skills
+
+This plugin includes:
+
+- `guardtower`: run and maintain the daily exposure scanner.
+- `guardtower-dependency-preflight`: use before dependency installs, upgrades, lockfile refreshes, SDK changes, or package-manager changes so Codex runs Guardtower before mutating dependency surfaces.
+
 ## Run
 
 ```bash
@@ -36,6 +43,12 @@ VERCEL_TEAM_SLUG=your-team-slug
 ```
 
 `VERCEL_TEAM_ID` can be used instead of `VERCEL_TEAM_SLUG`.
+
+## Daily Automation
+
+The Codex cron automation definition is versioned at [automations/daily-guardtower.automation.toml](/Users/joseph/guard/plugins/guardtower/automations/daily-guardtower.automation.toml). A readable prompt copy is kept in [automations/daily-guardtower-prompt.md](/Users/joseph/guard/plugins/guardtower/automations/daily-guardtower-prompt.md), and tests verify both files stay aligned. Keep the saved `daily-guardtower` automation aligned with these files.
+
+Automation workers should treat `config.json` as the source of truth for credential loading. The default `env_file` is `/Users/joseph/guard/.env`, so workers must not claim `X_BEARER_TOKEN` or `VERCEL_TOKEN` is missing based only on their shell environment. Report a credential skip only when the scanner output, Markdown report, or JSON report explicitly records it.
 
 ## Reports
 

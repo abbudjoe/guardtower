@@ -13,6 +13,15 @@ It inventories dependency manifests, checks exact package/version exposure throu
 - an Action View for triage
 - strict threat-intel filtering so generic AI/tech roundups do not become security findings
 
+## Codex Skills
+
+The plugin ships two skills:
+
+- `guardtower`: run and maintain the daily exposure scanner.
+- `guardtower-dependency-preflight`: trigger before Codex installs, adds, upgrades, or refreshes dependencies so Guardtower checks current vulnerability intelligence first.
+
+The dependency preflight skill tells Codex to run Guardtower before dependency mutations, inspect the newest Action View, avoid adding dependency churn when the target project already has package-linked findings, and rerun Guardtower after security-motivated dependency changes.
+
 ## Run Locally
 
 ```bash
@@ -38,6 +47,12 @@ VERCEL_TEAM_SLUG=
 `X_BEARER_TOKEN` enables X recent search. Without it, Guardtower still uses OSV, CISA KEV, NVD, and RSS.
 
 `VERCEL_TOKEN` enables Vercel production deployment discovery. Optional `VERCEL_TEAM_ID` or `VERCEL_TEAM_SLUG` scopes Vercel API requests to a team.
+
+## Daily Automation
+
+The saved Codex cron automation should match [plugins/guardtower/automations/daily-guardtower.automation.toml](/Users/joseph/guard/plugins/guardtower/automations/daily-guardtower.automation.toml). A readable prompt copy is kept in [plugins/guardtower/automations/daily-guardtower-prompt.md](/Users/joseph/guard/plugins/guardtower/automations/daily-guardtower-prompt.md), and tests verify both files stay aligned.
+
+The important contract is that Guardtower loads `/Users/joseph/guard/.env` through `config.json`; automation workers should only report `X_BEARER_TOKEN` or `VERCEL_TOKEN` as missing when the scanner output or report explicitly records a skipped source.
 
 ## Reports
 

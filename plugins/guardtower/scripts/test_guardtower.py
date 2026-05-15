@@ -3,15 +3,20 @@
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 import json
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import guardtower
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class ThreatFilteringTests(unittest.TestCase):
@@ -29,6 +34,27 @@ class ThreatFilteringTests(unittest.TestCase):
         self.assertTrue(guardtower.is_security_exploit_news(text, text))
 
 
+class AutomationPromptTests(unittest.TestCase):
+    def test_daily_automation_prompt_matches_markdown_copy(self) -> None:
+        prompt_path = REPO_ROOT / "plugins/guardtower/automations/daily-guardtower-prompt.md"
+        automation_path = REPO_ROOT / "plugins/guardtower/automations/daily-guardtower.automation.toml"
+
+        prompt_md = prompt_path.read_text()
+        prompt = prompt_md.split("```text\n", 1)[1].split("\n```", 1)[0]
+        automation = tomllib.loads(automation_path.read_text())
+
+        self.assertEqual(automation["prompt"], prompt)
+
+    def test_daily_automation_prompt_preserves_env_contract(self) -> None:
+        automation_path = REPO_ROOT / "plugins/guardtower/automations/daily-guardtower.automation.toml"
+        prompt = tomllib.loads(automation_path.read_text())["prompt"]
+
+        self.assertIn("/Users/joseph/guard/.env", prompt)
+        self.assertIn("Do not inspect or print secret values", prompt)
+        self.assertIn("Do not claim `X_BEARER_TOKEN`, `VERCEL_TOKEN`, or other credentials are unset", prompt)
+        self.assertIn("only report a token as missing/skipped if the scanner output", prompt)
+
+
 class SurfaceNameMatchingTests(unittest.TestCase):
     def test_surface_names_do_not_match_inside_words(self) -> None:
         self.assertFalse(guardtower.surface_name_matches("Vite", "Vaultwarden allows a user to purge data."))
@@ -36,6 +62,21 @@ class SurfaceNameMatchingTests(unittest.TestCase):
     def test_surface_names_match_exact_tokens_and_product_names(self) -> None:
         self.assertTrue(guardtower.surface_name_matches("Vite", "Critical vulnerability in Vite plugin chain."))
         self.assertTrue(guardtower.surface_name_matches("Next.js", "Next.js cache poisoning exploit disclosed."))
+
+    def test_react_surface_does_not_match_nextjs_framework_description(self) -> None:
+        self.assertFalse(
+            guardtower.surface_name_matches(
+                "React",
+                "Next.js is a React framework for building full-stack web applications.",
+            )
+        )
+        self.assertFalse(
+            guardtower.surface_name_matches(
+                "React",
+                "Next.js applications using React Server Components can be vulnerable to cache poisoning.",
+            )
+        )
+        self.assertTrue(guardtower.surface_name_matches("React", "React DOM exploit chain disclosed."))
 
 
 class DependencyVersionParsingTests(unittest.TestCase):
@@ -46,6 +87,130 @@ class DependencyVersionParsingTests(unittest.TestCase):
     def test_exact_versions_are_preserved(self) -> None:
         self.assertEqual(guardtower.clean_version("pillow==10.4.0"), "10.4.0")
         self.assertEqual(guardtower.clean_version("10.4.0"), "10.4.0")
+
+    def test_watched_surface_range_text_filters_fixed_versions(self) -> None:
+        text = (
+            "Next.js is a React framework for building full-stack web applications. "
+            "From 12.2.0 to before 15.5.16 and 16.2.5, applications can allow "
+            "unauthorized access."
+        )
+
+        self.assertFalse(guardtower.version_is_in_affected_range("15.5.18", text))
+        self.assertTrue(guardtower.version_is_in_affected_range("15.5.15", text))
+        self.assertTrue(guardtower.version_is_in_affected_range("14.2.8", text))
+        self.assertFalse(guardtower.version_is_in_affected_range("16.2.5", text))
+
+    def test_watched_surface_exposures_skip_versions_outside_advisory_range(self) -> None:
+        config = {
+            "watched_surfaces": [
+                {
+                    "id": "nextjs",
+                    "names": ["Next.js"],
+                    "packages": [{"ecosystem": "npm", "name": "next"}],
+                }
+            ]
+        }
+        fixed_dep = guardtower.Dependency(
+            ecosystem="npm",
+            name="next",
+            version="15.5.18",
+            project="web",
+            manifest="/workspace/web/package.json",
+            source="dependencies",
+        )
+        affected_dep = dataclasses.replace(fixed_dep, version="15.5.15")
+        item = guardtower.ThreatItem(
+            source="nvd-recent",
+            title="CVE-2026-44572: Next.js affected before 15.5.16 and 16.2.5",
+            url="https://example.test",
+            published=None,
+            cves=("CVE-2026-44572",),
+            text=(
+                "Next.js is a React framework for building full-stack web applications. "
+                "From 12.2.0 to before 15.5.16 and 16.2.5, an external client could "
+                "send a crafted request."
+            ),
+        )
+
+        exposures = guardtower.build_threat_exposures(config, [fixed_dep, affected_dep], [item])
+
+        self.assertEqual(len(exposures), 1)
+        self.assertEqual(exposures[0].dependency.version, "15.5.15")
+
+    def test_watched_surface_cve_without_range_requires_osv_confirmation(self) -> None:
+        config = {
+            "watched_surfaces": [
+                {
+                    "id": "nextjs",
+                    "names": ["Next.js"],
+                    "packages": [{"ecosystem": "npm", "name": "next"}],
+                }
+            ]
+        }
+        dep = guardtower.Dependency(
+            ecosystem="npm",
+            name="next",
+            version="15.5.18",
+            project="web",
+            manifest="/workspace/web/package.json",
+            source="dependencies",
+        )
+        item = guardtower.ThreatItem(
+            source="x-recent",
+            title="CVE-2026-44578 Next.js WebSocket Upgrade SSRF",
+            url="https://example.test",
+            published=None,
+            cves=("CVE-2026-44578",),
+            text="Next.js WebSocket Upgrade SSRF exploit discussion without fixed-version range.",
+        )
+
+        exposures = guardtower.build_threat_exposures(config, [dep], [item], {})
+
+        self.assertEqual(len(exposures), 1)
+        self.assertEqual(exposures[0].kind, "watched-surface-mention")
+        self.assertIsNone(exposures[0].dependency)
+
+    def test_watched_surface_cve_without_range_uses_osv_confirmation(self) -> None:
+        config = {
+            "watched_surfaces": [
+                {
+                    "id": "nextjs",
+                    "names": ["Next.js"],
+                    "packages": [{"ecosystem": "npm", "name": "next"}],
+                }
+            ]
+        }
+        dep = guardtower.Dependency(
+            ecosystem="npm",
+            name="next",
+            version="15.5.15",
+            project="web",
+            manifest="/workspace/web/package.json",
+            source="dependencies",
+        )
+        item = guardtower.ThreatItem(
+            source="x-recent",
+            title="CVE-2026-44578 Next.js WebSocket Upgrade SSRF",
+            url="https://example.test",
+            published=None,
+            cves=("CVE-2026-44578",),
+            text="Next.js WebSocket Upgrade SSRF exploit discussion without fixed-version range.",
+        )
+        osv_results = {
+            ("npm", "next", "15.5.15"): [
+                {
+                    "id": "GHSA-c4j6-fc7j-m34r",
+                    "aliases": ["CVE-2026-44578"],
+                    "summary": "Next.js vulnerable to SSRF",
+                }
+            ]
+        }
+
+        exposures = guardtower.build_threat_exposures(config, [dep], [item], osv_results)
+
+        self.assertEqual(len(exposures), 1)
+        self.assertEqual(exposures[0].kind, "watched-surface-package")
+        self.assertEqual(exposures[0].dependency.version, "15.5.15")
 
 
 class ReportFormattingTests(unittest.TestCase):
