@@ -44,6 +44,12 @@ VERCEL_TEAM_SLUG=your-team-slug
 
 `VERCEL_TEAM_ID` can be used instead of `VERCEL_TEAM_SLUG`.
 
+## Daily Automation
+
+The Codex cron automation definition is versioned at [automations/daily-guardtower.automation.toml](/Users/joseph/guard/plugins/guardtower/automations/daily-guardtower.automation.toml). A readable prompt copy is kept in [automations/daily-guardtower-prompt.md](/Users/joseph/guard/plugins/guardtower/automations/daily-guardtower-prompt.md), and tests verify both files stay aligned. Keep the saved `daily-guardtower` automation aligned with these files.
+
+Automation workers should treat `config.json` as the source of truth for credential loading. The default `env_file` is `/Users/joseph/guard/.env`, so workers must not claim `X_BEARER_TOKEN` or `VERCEL_TOKEN` is missing based only on their shell environment. Report a credential skip only when the scanner output, Markdown report, or JSON report explicitly records it.
+
 ## Reports
 
 Reports are written to `/Users/joseph/.codex/guardtower/reports` by default as timestamped Markdown and JSON files.

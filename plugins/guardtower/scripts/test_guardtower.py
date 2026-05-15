@@ -8,11 +8,15 @@ import unittest
 import json
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import guardtower
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class ThreatFilteringTests(unittest.TestCase):
@@ -28,6 +32,27 @@ class ThreatFilteringTests(unittest.TestCase):
         text = "CVE-2026-21510 is confirmed exploited in the wild for Windows RCE."
 
         self.assertTrue(guardtower.is_security_exploit_news(text, text))
+
+
+class AutomationPromptTests(unittest.TestCase):
+    def test_daily_automation_prompt_matches_markdown_copy(self) -> None:
+        prompt_path = REPO_ROOT / "plugins/guardtower/automations/daily-guardtower-prompt.md"
+        automation_path = REPO_ROOT / "plugins/guardtower/automations/daily-guardtower.automation.toml"
+
+        prompt_md = prompt_path.read_text()
+        prompt = prompt_md.split("```text\n", 1)[1].split("\n```", 1)[0]
+        automation = tomllib.loads(automation_path.read_text())
+
+        self.assertEqual(automation["prompt"], prompt)
+
+    def test_daily_automation_prompt_preserves_env_contract(self) -> None:
+        automation_path = REPO_ROOT / "plugins/guardtower/automations/daily-guardtower.automation.toml"
+        prompt = tomllib.loads(automation_path.read_text())["prompt"]
+
+        self.assertIn("/Users/joseph/guard/.env", prompt)
+        self.assertIn("Do not inspect or print secret values", prompt)
+        self.assertIn("Do not claim `X_BEARER_TOKEN`, `VERCEL_TOKEN`, or other credentials are unset", prompt)
+        self.assertIn("only report a token as missing/skipped if the scanner output", prompt)
 
 
 class SurfaceNameMatchingTests(unittest.TestCase):
